@@ -8,7 +8,7 @@ app_port: 7860
 pinned: false
 ---
 
-# 🎡 The Food-Wheeler
+# The Food-Wheeler
 
 Two partners, one phone, one decision. Type or dictate what you each
 want, and a pluggable AI "System 1" decision engine picks a restaurant —
