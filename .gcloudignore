@@ -1,0 +1,15 @@
+# What `gcloud run deploy --source .` uploads to Cloud Build. Without this
+# file gcloud falls back to .gitignore, but .venv/ is large and pointless
+# to upload (the Dockerfile installs its own deps), so we're explicit here.
+.gcloudignore
+.git/
+.gitignore
+.dockerignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+*.log
+node_modules/
+.claude/

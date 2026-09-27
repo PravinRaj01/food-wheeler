@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Food Wheeler</title>
+<meta name="description" content="Where you're both eating tonight.">
+
+<!-- Fonts: Fraunces (editorial serif, wordmark/headings) + Inter (UI/body) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = { theme: { extend: { fontFamily: { serif: ['Fraunces', 'serif'], sans: ['Inter', 'sans-serif'] } } } };
+</script>
+
+<!-- Only used for the reveal transition; kept restrained (see prefers-reduced-motion below) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+
+<!-- cdnjs only mirrors canvas-confetti's CommonJS build (throws "module is
+     not defined" as a plain <script>); jsdelivr mirrors npm's dist/ as-is,
+     which includes the actual browser-global IIFE build we need. -->
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0d;
+    --surface: #16161a;
+    --surface-2: #1c1c21;
+    --border: rgba(255,255,255,0.08);
+    --text: #f1efe9;
+    --text-dim: #a3a09b;
+    --text-faint: #6b6864;
+    --accent: #c9a15a;
+    --accent-dim: rgba(201,161,90,0.14);
+    --p1: #c9a15a;
+    --p2: #6f8f8a;
+  }
+  * { -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh; min-height: 100dvh;
+    overflow-x: hidden;
+  }
+  .font-serif { font-family: 'Fraunces', serif; }
+
+  .app-frame {
+    max-width: 480px; margin: 0 auto;
+    min-height: 100vh; min-height: 100dvh;
+    position: relative;
+  }
+  @media (min-width: 540px) {
+    body { background: radial-gradient(ellipse at top, #141416 0%, #0b0b0d 60%); }
+    .app-frame { border-left: 1px solid var(--border); border-right: 1px solid var(--border); min-height: 100vh; }
+  }
+
+  .surface { background: var(--surface); border: 1px solid var(--border); }
+  .surface-2 { background: var(--surface-2); border: 1px solid var(--border); }
+
+  .safe-bottom { padding-bottom: max(1.25rem, env(safe-area-inset-bottom)); }
+  .safe-top { padding-top: max(1rem, env(safe-area-inset-top)); }
+  .hidden-view { display: none !important; }
+
+  .icon { width: 1.1em; height: 1.1em; display: inline-block; vertical-align: -0.15em; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  .btn-primary {
+    background: var(--accent); color: #211a0d;
+    transition: filter .15s, transform .1s;
+  }
+  .btn-primary:active { transform: scale(0.98); }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-primary:disabled { opacity: 0.35; filter: none; }
+
+  .btn-ghost {
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+    transition: background-color .15s, transform .1s;
+  }
+  .btn-ghost:active { transform: scale(0.98); }
+  .btn-ghost:hover { background: rgba(255,255,255,0.04); }
+
+  .field {
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+  }
+  .field:focus { outline: none; border-color: var(--accent); }
+  .field::placeholder { color: var(--text-faint); }
+
+  .mic-btn { transition: background-color .2s, color .2s, transform .15s; color: var(--text-dim); }
+  .mic-btn:active { transform: scale(0.94); }
+  .mic-listening { background-color: var(--accent) !important; color: #211a0d !important; animation: mic-pulse 1.6s ease-in-out infinite; }
+  @keyframes mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(201,161,90,0.45); }
+    50% { box-shadow: 0 0 0 10px rgba(201,161,90,0); }
+  }
+
+  .card-inactive { opacity: 0.5; }
+  .blurred-text { filter: blur(6px); user-select: none; }
+
+  .badge-num {
+    width: 1.6rem; height: 1.6rem; border-radius: 9999px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 0.7rem; font-weight: 600; border: 1px solid currentColor;
+  }
+
+  #wheelCanvas { touch-action: none; }
+
+  .engine-pill { transition: background-color .2s, color .2s, opacity .2s; }
+  .engine-pill[data-active="true"] { background: var(--accent); color: #211a0d; }
+  .engine-pill[data-active="false"] { color: var(--text-dim); }
+  .engine-pill[data-disabled="true"] { opacity: 0.35; pointer-events: none; }
+
+  .toast-stack {
+    position: fixed; top: 1rem; left: 50%; transform: translateX(-50%);
+    z-index: 60; display: flex; flex-direction: column; gap: 0.5rem;
+    width: min(90vw, 26rem); pointer-events: none;
+  }
+  .toast { background: var(--surface-2); border: 1px solid var(--border); }
+
+  .leaflet-container { background: #0d0d0f; border-radius: 0.75rem; }
+  /* Standard OSM tiles, filtered to match the dark theme - CartoDB's free
+     dark basemap now watermarks anonymous requests, so this avoids any
+     third-party key dependency and stays reliably free. Markers/popups
+     live outside .leaflet-tile-pane so they're unaffected. */
+  .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.5); }
+
+  #splash { background: var(--bg); transition: opacity .5s ease; }
+  .splash-bar-track { width: 5rem; height: 1px; background: var(--border); overflow: hidden; }
+  .splash-bar { height: 100%; background: var(--accent); width: 0%; transition: width .3s ease; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================= SPLASH ============================= -->
+<div id="splash" class="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-5">
+  <svg viewBox="0 0 48 48" width="40" height="40" class="text-[var(--accent)]" style="stroke:currentColor;fill:none;stroke-width:1.4">
+    <circle cx="24" cy="24" r="18"/>
+    <circle cx="24" cy="24" r="2.2" fill="currentColor" stroke="none"/>
+    <path d="M24 6v6M24 36v6M42 24h-6M12 24H6"/>
+  </svg>
+  <h1 class="font-serif text-2xl tracking-wide">Food Wheeler</h1>
+  <div class="splash-bar-track"><div id="splashBar" class="splash-bar"></div></div>
+</div>
+
+<div id="toastStack" class="toast-stack"></div>
+
+<div class="app-frame">
+<main class="relative px-5 pt-5 safe-bottom safe-top">
+
+  <!-- ============================= HEADER + ENGINE TOGGLE ============================= -->
+  <header class="mb-6">
+    <div id="engineToggle" class="surface rounded-lg p-1 flex mb-3 text-xs font-medium select-none"></div>
+    <p id="engineCaption" class="text-center text-[11px] text-[var(--text-faint)] mb-5">&nbsp;</p>
+
+    <div class="flex items-baseline justify-between">
+      <h1 id="appTitle" class="font-serif text-2xl font-semibold tracking-tight cursor-default select-none">Food Wheeler</h1>
+      <span id="devChip" class="hidden-view text-[10px] tracking-wide uppercase text-[var(--text-faint)] border border-[var(--border)] rounded px-1.5 py-0.5">Dev</span>
+    </div>
+    <p class="text-[var(--text-dim)] text-sm mt-1">Where you're both eating tonight.</p>
+
+    <button id="locationChip" class="mt-4 inline-flex items-center gap-1.5 surface rounded-full px-3 py-1.5 text-xs text-[var(--text-dim)]">
+      <svg class="icon" viewBox="0 0 24 24"><path d="M12 21s7-6.5 7-12a7 7 0 1 0-14 0c0 5.5 7 12 7 12z"/><circle cx="12" cy="9" r="2.3"/></svg>
+      <span id="locationChipText">Use my location</span>
+    </button>
+  </header>
+
+  <!-- ============================= VIEW 1: INPUT ============================= -->
+  <section id="view-input">
+    <div id="p1Card" class="surface rounded-2xl p-5 mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="badge-num" style="color:var(--p1)">1</span>
+          <h2 class="font-medium text-sm text-[var(--text-dim)] tracking-wide">PARTNER ONE</h2>
+        </div>
+        <span id="p1Status" class="text-[11px]" style="color:var(--p1)">Your turn</span>
+      </div>
+      <div class="relative">
+        <textarea id="p1Text" rows="3" maxlength="500"
+          placeholder="Spicy, under $30, somewhere close..."
+          class="field w-full resize-none rounded-xl px-4 py-3 pr-12 text-sm"></textarea>
+        <button data-partner="1" class="mic-btn absolute bottom-2.5 right-2.5 h-9 w-9 rounded-full flex items-center justify-center">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        </button>
+      </div>
+      <div id="p1Interim" class="text-xs italic text-[var(--text-faint)] mt-1 min-h-[1rem]"></div>
+      <div class="flex flex-wrap gap-2 mt-2">
+        <button data-chip="Spicy" data-partner="1" class="chip-btn text-xs surface-2 rounded-full px-3 py-1.5 text-[var(--text-dim)]">Spicy</button>
+        <button data-chip="Outdoor patio" data-partner="1" class="chip-btn text-xs surface-2 rounded-full px-3 py-1.5 text-[var(--text-dim)]">Outdoor patio</button>
+        <button data-chip="Under $30" data-partner="1" class="chip-btn text-xs surface-2 rounded-full px-3 py-1.5 text-[var(--text-dim)]">Under $30</button>
+        <button data-chip="Vegan-friendly" data-partner="1" class="chip-btn text-xs surface-2 rounded-full px-3 py-1.5 text-[var(--text-dim)]">Vegan-friendly</button>
+      </div>
+      <button id="passToP2" disabled
+        class="btn-primary mt-4 w-full py-3 rounded-xl font-medium text-sm disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
+        Pass to Partner Two
+        <svg class="icon" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+
+    <div id="p2Card" class="surface rounded-2xl p-5 mb-5 card-inactive">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="badge-num" style="color:var(--p2)">2</span>
+          <h2 class="font-medium text-sm text-[var(--text-dim)] tracking-wide">PARTNER TWO</h2>
+        </div>
+        <span id="p2Status" class="text-[11px] text-[var(--text-faint)]">Waiting</span>
+      </div>
+      <div class="relative">
+        <textarea id="p2Text" rows="3" maxlength="500" disabled
+          placeholder="Casual, a patio if possible, no burgers..."
+          class="field w-full resize-none rounded-xl px-4 py-3 pr-12 text-sm"></textarea>
+        <button data-partner="2" class="mic-btn absolute bottom-2.5 right-2.5 h-9 w-9 rounded-full flex items-center justify-center" disabled>
+          <svg class="icon" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        </button>
+      </div>
+      <div id="p2Interim" class="text-xs italic text-[var(--text-faint)] mt-1 min-h-[1rem]"></div>
+      <div class="flex flex-wrap gap-2 mt-2">
+        <button data-chip="Casual" data-partner="2" class="chip-btn text-xs surface-2 rounded-full px-3 py-1.5 text-[var(--text-dim)]" disabled>Casual</button>
+        <button data-chip="No burgers" data-partner="2" class="chip-btn text-xs surface-2 rounded-full px-3 py-1.5 text-[var(--text-dim)]" disabled>No burgers</button>
+        <button data-chip="Halal" data-partner="2" class="chip-btn text-xs surface-2 rounded-full px-3 py-1.5 text-[var(--text-dim)]" disabled>Halal</button>
+        <button data-chip="Gluten-free" data-partner="2" class="chip-btn text-xs surface-2 rounded-full px-3 py-1.5 text-[var(--text-dim)]" disabled>Gluten-free</button>
+      </div>
+    </div>
+
+    <button id="wheelItBtn" disabled
+      class="hidden-view btn-primary w-full py-4 rounded-xl font-medium text-base disabled:cursor-not-allowed">
+      Find Our Table
+    </button>
+  </section>
+
+  <!-- ============================= HANDOFF INTERSTITIAL ============================= -->
+  <section id="view-handoff" class="hidden-view fixed inset-0 z-50 flex flex-col items-center justify-center text-center px-8" style="background:var(--bg)">
+    <svg class="icon mb-4" style="width:2.5rem;height:2.5rem;color:var(--text-dim)" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>
+    <p class="font-serif text-xl">Hand the phone to Partner Two</p>
+  </section>
+
+  <!-- ============================= VIEW 2A: WHEEL ============================= -->
+  <section id="view-wheel" class="hidden-view text-center">
+    <p id="wheelStatus" class="text-[var(--text-dim)] text-sm mb-1 tracking-wide">Finding your table…</p>
+    <p id="wheelSubStatus" class="text-[11px] text-[var(--text-faint)] mb-6">&nbsp;</p>
+    <div class="relative mx-auto" style="width:min(80vw,340px)">
+      <svg class="absolute left-1/2 -translate-x-1/2 z-10 text-[var(--accent)]" style="top:-0.6rem;width:1.5rem;height:1.5rem;stroke:currentColor;fill:currentColor" viewBox="0 0 24 24"><path d="M12 18L5 8h14z"/></svg>
+      <canvas id="wheelCanvas" width="600" height="600" class="w-full h-auto"></canvas>
+    </div>
+  </section>
+
+  <!-- ============================= VIEW 2B: MEDIATOR ============================= -->
+  <section id="view-mediator" class="hidden-view">
+    <div class="surface rounded-2xl p-6 text-center">
+      <p id="mediatorEngineChip" class="text-[11px] text-[var(--text-faint)] mb-2 tracking-wide">&nbsp;</p>
+      <h2 class="font-serif text-xl mb-1">Let's settle this</h2>
+      <p id="mediatorPrompt" class="text-[var(--text-dim)] text-sm mb-5">Decide together:</p>
+
+      <div id="mediatorBars" class="space-y-3 mb-6 text-left"></div>
+      <div id="devMediatorLine" class="hidden-view text-[10px] font-mono surface-2 rounded-lg px-3 py-2 mb-4 text-left text-[var(--text-faint)]"></div>
+
+      <div id="mediatorOptions" class="grid grid-cols-2 gap-3"></div>
+
+      <p class="text-xs text-[var(--text-faint)] mt-5">
+        <span id="roundLabel">Round 1 of 2</span> &middot;
+        <button id="justSpinBtn" class="underline text-[var(--text-dim)]">Spin anyway</button>
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================= VIEW 3: REVEAL ============================= -->
+  <section id="view-reveal" class="hidden-view">
+    <div class="surface rounded-2xl p-6 animate__animated animate__fadeIn">
+      <p class="text-[11px] tracking-[0.15em] uppercase text-[var(--text-faint)] mb-2">Tonight's table</p>
+      <div class="flex items-start justify-between gap-3 mb-1">
+        <h2 id="winnerName" class="font-serif text-2xl leading-tight"></h2>
+        <span id="matchBadge" class="shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-full whitespace-nowrap" style="background:var(--accent-dim);color:var(--accent)"></span>
+      </div>
+      <p id="winnerMeta" class="text-sm text-[var(--text-dim)] mb-3"></p>
+      <div id="winnerTags" class="flex flex-wrap gap-1.5 mb-4"></div>
+      <div id="partnerRecap" class="text-xs text-[var(--text-faint)] mb-4"></div>
+
+      <div id="devComparison" class="hidden-view font-mono text-[10px] surface-2 rounded-lg p-3 mb-4 text-[var(--text-dim)]"></div>
+
+      <div id="mapContainer" class="h-56 md:h-64 rounded-xl overflow-hidden mb-4" style="background:var(--surface-2)"></div>
+
+      <p id="runnerUps" class="text-xs text-[var(--text-faint)] mb-5"></p>
+
+      <div class="grid grid-cols-2 gap-3">
+        <a id="directionsBtn" target="_blank" rel="noopener"
+           class="btn-ghost text-center py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-1.5">
+          <svg class="icon" viewBox="0 0 24 24"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+          Directions
+        </a>
+        <button id="startOverBtn" class="btn-primary py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-1.5">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+          Start Over
+        </button>
+      </div>
+    </div>
+  </section>
+
+</main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------------
+  // Small utilities
+  // ---------------------------------------------------------------------
+  const $ = (sel) => document.querySelector(sel);
+  const $all = (sel) => Array.from(document.querySelectorAll(sel));
+  const reducedMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const vibrate = (pattern) => { try { navigator.vibrate && navigator.vibrate(pattern); } catch (e) {} };
+
+  function safeStorage(kind) {
+    return {
+      get(key, fallback) {
+        try { const v = window[kind].getItem(key); return v === null ? fallback : v; }
+        catch (e) { return fallback; }
+      },
+      set(key, value) { try { window[kind].setItem(key, value); } catch (e) {} },
+    };
+  }
+  const local = safeStorage('localStorage');
+  const session = safeStorage('sessionStorage');
+
+  function toast(message, { ms = 2400 } = {}) {
+    const el = document.createElement('div');
+    el.className = 'toast rounded-xl px-4 py-2.5 text-sm text-center shadow-lg animate__animated animate__fadeInDown pointer-events-auto';
+    el.textContent = message;
+    $('#toastStack').appendChild(el);
+    setTimeout(() => {
+      el.classList.remove('animate__fadeInDown');
+      el.classList.add('animate__fadeOutUp');
+      setTimeout(() => el.remove(), 400);
+    }, ms);
+  }
+
+  function describeApiError(data) {
+    if (!data) return "Something went wrong. Please try again.";
+    const messages = {
+      EMPTY_INPUT: "At least one of you needs to say something.",
+      INPUT_TOO_LONG: "Keep it a bit shorter, please.",
+      UNKNOWN_ENGINE: "That decision engine isn't recognized.",
+      ENGINE_UNAVAILABLE: `That engine isn't available right now${data.message ? ': ' + data.message : ''}.`,
+      MODEL_LOADING: "Still warming up — trying again.",
+      MODEL_ERROR: "The decision engine had trouble. Please try again.",
+    };
+    return messages[data.code] || data.message || "Something went wrong.";
+  }
+
+  // ---------------------------------------------------------------------
+  // App state
+  // ---------------------------------------------------------------------
+  const state = {
+    p1: { text: '', mode: 'typed' },
+    p2: { text: '', mode: 'typed' },
+    location: null,
+    candidates: null,
+    source: null,
+    tiebreakers: [],
+    round: 0,
+    engine: local.get('fw_engine', 'laya'),
+    engineLocked: false,
+    devMode: session.get('fw_dev_mode', '0') === '1',
+    lastPayload: null,
+  };
+
+  // ---------------------------------------------------------------------
+  // Splash screen
+  // ---------------------------------------------------------------------
+  function runSplash() {
+    const bar = $('#splashBar');
+    requestAnimationFrame(() => { bar.style.width = '70%'; });
+    const minWait = new Promise((res) => setTimeout(res, 900));
+    const ready = loadEngines().catch(() => {});
+    Promise.race([Promise.all([minWait, ready]), new Promise((res) => setTimeout(res, 4000))]).then(() => {
+      bar.style.width = '100%';
+      setTimeout(() => {
+        const splash = $('#splash');
+        splash.style.opacity = '0';
+        setTimeout(() => splash.remove(), 550);
+      }, 150);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // View management
+  // ---------------------------------------------------------------------
+  const VIEWS = ['view-input', 'view-wheel', 'view-mediator', 'view-reveal'];
+  function showView(id) {
+    VIEWS.forEach((v) => $('#' + v).classList.toggle('hidden-view', v !== id));
+  }
+
+  // ---------------------------------------------------------------------
+  // Engine toggle
+  // ---------------------------------------------------------------------
+  const ENGINE_CAPTIONS = {
+    laya: 'Fast, joint-attention model',
+    gliner: 'CPU-first, handles exclusions well',
+    clm_8b: 'Dual-encoder — needs a GPU server',
+  };
+  const ENGINE_ICONS = {
+    laya: '<svg class="icon" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>',
+    gliner: '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>',
+    clm_8b: '<svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>',
+  };
+  let engineList = [];
+
+  async function loadEngines() {
+    try {
+      const res = await fetch('/api/engines');
+      engineList = await res.json();
+    } catch (e) {
+      engineList = [{ id: 'laya', label: 'Laya', available: true, default: true }];
+    }
+    if (!engineList.some((e) => e.id === state.engine && e.available)) {
+      state.engine = engineList.find((e) => e.default)?.id || engineList[0]?.id || 'laya';
+    }
+    renderEngineToggle();
+    fetch(`/api/engines/${state.engine}/warm`, { method: 'POST', headers: { 'Content-Length': '0' } }).catch(() => {});
+  }
+
+  function renderEngineToggle() {
+    const box = $('#engineToggle');
+    box.innerHTML = '';
+    engineList.forEach((e) => {
+      const btn = document.createElement('button');
+      btn.className = 'engine-pill flex-1 rounded-md py-2 px-2 text-center flex items-center justify-center gap-1.5';
+      btn.dataset.active = String(e.id === state.engine);
+      btn.dataset.disabled = String(!e.available || (state.engineLocked && e.id !== state.engine));
+      btn.title = e.available ? '' : (e.reason || 'unavailable');
+      btn.innerHTML = `${ENGINE_ICONS[e.id] || ''}<span>${e.label}</span>`;
+      btn.addEventListener('click', () => selectEngine(e.id));
+      box.appendChild(btn);
+    });
+    updateEngineCaption();
+  }
+
+  function updateEngineCaption() {
+    const cap = $('#engineCaption');
+    cap.textContent = state.engineLocked
+      ? 'Locked for this round — start over to change engines'
+      : (ENGINE_CAPTIONS[state.engine] || '');
+  }
+
+  function selectEngine(id) {
+    if (state.engineLocked) return;
+    const entry = engineList.find((e) => e.id === id);
+    if (!entry || !entry.available) {
+      toast(entry ? (entry.reason || 'That engine is unavailable.') : 'Unknown engine.');
+      return;
+    }
+    state.engine = id;
+    local.set('fw_engine', id);
+    renderEngineToggle();
+    if (!entry.loaded) {
+      toast(`Warming up ${entry.label}…`);
+      fetch(`/api/engines/${id}/warm`, { method: 'POST', headers: { 'Content-Length': '0' } }).catch(() => {});
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Dev Mode easter egg — triple-click (or triple-tap) the title
+  // ---------------------------------------------------------------------
+  function setDevModeUI() { $('#devChip').classList.toggle('hidden-view', !state.devMode); }
+
+  function toggleDevMode() {
+    state.devMode = !state.devMode;
+    session.set('fw_dev_mode', state.devMode ? '1' : '0');
+    setDevModeUI();
+    toast(state.devMode ? 'Developer mode enabled' : 'Developer mode off');
+  }
+
+  function setupDevModeTrigger() {
+    const title = $('#appTitle');
+    title.addEventListener('click', (ev) => { if (ev.detail === 3) toggleDevMode(); });
+    let taps = 0, tapTimer = null;
+    title.addEventListener('touchend', () => {
+      taps += 1;
+      clearTimeout(tapTimer);
+      tapTimer = setTimeout(() => { taps = 0; }, 600);
+      if (taps >= 3) { taps = 0; toggleDevMode(); }
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Geolocation
+  // ---------------------------------------------------------------------
+  function setLocationChip(text) { $('#locationChipText').textContent = text; }
+
+  function askLocation() {
+    if (!navigator.geolocation) { setLocationChip('Demo location'); return; }
+    setLocationChip('Locating…');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        state.location = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy_m: Math.round(pos.coords.accuracy || 0) };
+        setLocationChip('Near you');
+      },
+      () => setLocationChip('Demo location'),
+      { timeout: 8000, maximumAge: 5 * 60 * 1000 }
+    );
+  }
+  $('#locationChip').addEventListener('click', askLocation);
+
+  // ---------------------------------------------------------------------
+  // Web Speech API — one shared recognizer
+  // ---------------------------------------------------------------------
+  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognizer = null;
+  let activeMicPartner = null;
+
+  function micButtonFor(partner) { return $(`.mic-btn[data-partner="${partner}"]`); }
+  function textAreaFor(partner) { return $(`#p${partner}Text`); }
+  function interimElFor(partner) { return $(`#p${partner}Interim`); }
+
+  function speechAvailable() { return !!SpeechRecognitionCtor && window.isSecureContext !== false; }
+
+  function disableAllMics(reason) {
+    $all('.mic-btn').forEach((b) => { b.disabled = true; b.title = reason; b.classList.add('opacity-30'); });
+  }
+
+  function stopListening() {
+    if (recognizer) { try { recognizer.stop(); } catch (e) {} }
+    if (activeMicPartner) micButtonFor(activeMicPartner).classList.remove('mic-listening');
+    activeMicPartner = null;
+  }
+
+  function startListening(partner) {
+    if (!speechAvailable()) return;
+    if (activeMicPartner === partner) { stopListening(); return; }
+    stopListening();
+
+    const rec = new SpeechRecognitionCtor();
+    rec.lang = 'en-US'; rec.continuous = false; rec.interimResults = true;
+    recognizer = rec;
+    activeMicPartner = partner;
+    micButtonFor(partner).classList.add('mic-listening');
+    interimElFor(partner).textContent = 'Listening…';
+
+    const baseText = textAreaFor(partner).value;
+    const sep = baseText && !/\s$/.test(baseText) ? ' ' : '';
+
+    rec.onresult = (event) => {
+      let finalTranscript = '', interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finalTranscript += t; else interim += t;
+      }
+      if (finalTranscript) {
+        textAreaFor(partner).value = baseText + sep + finalTranscript.trim();
+        onPartnerTextChanged(partner);
+      }
+      interimElFor(partner).textContent = interim ? `"${interim}"` : 'Listening…';
+    };
+
+    rec.onerror = (event) => {
+      const messages = {
+        'not-allowed': 'Microphone blocked. Allow it in your browser settings.',
+        'service-not-allowed': 'Microphone blocked. Allow it in your browser settings.',
+        'audio-capture': 'No microphone found.',
+        'no-speech': "Didn't catch that — try again.",
+        'network': 'Voice needs a connection. Try typing instead.',
+      };
+      toast(messages[event.error] || 'Voice input had a problem.');
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        micButtonFor(partner).disabled = true;
+        micButtonFor(partner).classList.add('opacity-30');
+      }
+    };
+
+    rec.onend = () => {
+      micButtonFor(partner).classList.remove('mic-listening');
+      interimElFor(partner).textContent = '';
+      if (activeMicPartner === partner) activeMicPartner = null;
+      textAreaFor(partner).dataset.mode = 'voice';
+    };
+
+    try { rec.start(); } catch (e) { toast('Could not start voice input.'); }
+  }
+
+  function setupMics() {
+    if (!speechAvailable()) {
+      disableAllMics('Voice input needs Chrome, Edge or Safari over HTTPS.');
+      return;
+    }
+    $all('.mic-btn').forEach((btn) => btn.addEventListener('click', () => startListening(Number(btn.dataset.partner))));
+  }
+
+  // ---------------------------------------------------------------------
+  // Input screen wiring
+  // ---------------------------------------------------------------------
+  function onPartnerTextChanged(partner) {
+    const val = textAreaFor(partner).value;
+    state[`p${partner}`].text = val;
+    if (partner === 1) $('#passToP2').disabled = val.trim().length === 0;
+    else $('#wheelItBtn').disabled = val.trim().length === 0 && state.p1.text.trim().length === 0;
+  }
+  $('#p1Text').addEventListener('input', () => onPartnerTextChanged(1));
+  $('#p2Text').addEventListener('input', () => onPartnerTextChanged(2));
+
+  $all('.chip-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const partner = Number(btn.dataset.partner);
+      const ta = textAreaFor(partner);
+      const sep = ta.value && !/[\s,]$/.test(ta.value) ? ', ' : '';
+      ta.value = ta.value + sep + btn.dataset.chip;
+      onPartnerTextChanged(partner);
+    });
+  });
+
+  function goToPartnerTwo() {
+    stopListening();
+    showView('view-handoff');
+    setTimeout(() => {
+      showView('view-input');
+      $('#p1Card').classList.add('card-inactive');
+      $('#p1Text').classList.add('blurred-text');
+      $('#p1Text').disabled = true;
+      micButtonFor(1).disabled = true;
+      $('#p1Status').textContent = 'Locked in';
+      $('#p1Status').style.color = 'var(--text-faint)';
+      $('#passToP2').classList.add('hidden-view');
+
+      $('#p2Card').classList.remove('card-inactive');
+      $('#p2Text').disabled = false;
+      $('#p2Status').textContent = 'Your turn';
+      $('#p2Status').style.color = 'var(--p2)';
+      $all('.chip-btn[data-partner="2"]').forEach((b) => (b.disabled = false));
+      if (speechAvailable()) micButtonFor(2).disabled = false;
+
+      $('#wheelItBtn').classList.remove('hidden-view');
+      $('#wheelItBtn').disabled = true;
+    }, reducedMotion() ? 100 : 800);
+  }
+  $('#passToP2').addEventListener('click', goToPartnerTwo);
+
+  $('#p1Card').addEventListener('click', () => {
+    const ta = $('#p1Text');
+    if (!ta.disabled) return;
+    ta.classList.toggle('blurred-text');
+  });
+
+  // ---------------------------------------------------------------------
+  // Submit → /api/decide
+  // ---------------------------------------------------------------------
+  function buildRequestBody() {
+    return {
+      engine: state.engine,
+      dev_mode: state.devMode,
+      partner1: { text: state.p1.text.trim(), input_mode: state.p1.mode },
+      partner2: { text: state.p2.text.trim(), input_mode: state.p2.mode },
+      location: state.location,
+      candidates: state.candidates,
+      source: state.source,
+      tiebreakers: state.tiebreakers,
+      round: state.round,
+    };
+  }
+
+  async function submitDecision({ retry = 0 } = {}) {
+    stopListening();
+    if (!state.engineLocked) { state.engineLocked = true; renderEngineToggle(); }
+    showView('view-wheel');
+    $('#wheelCanvas').getContext('2d').clearRect(0, 0, 600, 600);
+    $('#wheelStatus').textContent = 'Finding your table…';
+    $('#wheelSubStatus').textContent = '';
+
+    let res, data;
+    try {
+      res = await fetch('/api/decide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildRequestBody()),
+      });
+      data = await res.json();
+    } catch (e) {
+      toast('Could not reach the server. Check your connection and try again.');
+      showView('view-input');
+      return;
+    }
+
+    if (data.status === 'error') {
+      if (data.code === 'MODEL_LOADING' && retry < 3) {
+        setTimeout(() => submitDecision({ retry: retry + 1 }), 800 * (retry + 1));
+        return;
+      }
+      toast(describeApiError(data));
+      showView('view-input');
+      return;
+    }
+
+    state.candidates = data.candidates || state.candidates;
+    state.source = data.source || state.source;
+    state.lastPayload = data;
+
+    if (data.status === 'match') handleMatch(data);
+    else if (data.status === 'tiebreaker') handleTiebreaker(data);
+  }
+  $('#wheelItBtn').addEventListener('click', () => submitDecision());
+
+  // ---------------------------------------------------------------------
+  // Wheel
+  // ---------------------------------------------------------------------
+  function drawWheel(ctx, slices, rotation) {
+    const size = 600, cx = size / 2, cy = size / 2, r = size / 2 - 8;
+    ctx.clearRect(0, 0, size, size);
+    const n = slices.length;
+    const sliceAngle = (2 * Math.PI) / n;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rotation);
+    slices.forEach((s, i) => {
+      const start = i * sliceAngle, end = start + sliceAngle;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, r, start, end);
+      ctx.closePath();
+      ctx.fillStyle = s.color || '#c9a15a';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.save();
+      ctx.rotate(start + sliceAngle / 2);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.font = '500 20px Inter, sans-serif';
+      const label = s.name.length > 16 ? s.name.slice(0, 15) + '…' : s.name;
+      ctx.fillText(label, r - 20, 7);
+      ctx.restore();
+    });
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, 40, 0, Math.PI * 2);
+    ctx.fillStyle = '#0b0b0d';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  function spinWheelTo(slices, winnerId, { fair = false } = {}) {
+    return new Promise((resolve) => {
+      const canvas = $('#wheelCanvas');
+      const ctx = canvas.getContext('2d');
+      const n = slices.length;
+      const sliceAngle = (2 * Math.PI) / n;
+      const winnerIndex = Math.max(0, slices.findIndex((s) => s.id === winnerId));
+
+      const jitter = (Math.random() - 0.5) * sliceAngle * 0.5;
+      const winnerCenter = winnerIndex * sliceAngle + sliceAngle / 2 + jitter;
+      const targetRotation = -Math.PI / 2 - winnerCenter;
+      const extraSpins = 5 * 2 * Math.PI;
+      const finalRotation = extraSpins + targetRotation;
+
+      const duration = reducedMotion() ? 600 : 2000;
+      const start = performance.now();
+      let lastTick = -1;
+
+      $('#wheelStatus').textContent = fair ? 'Too close to call…' : 'Spinning…';
+      $('#wheelSubStatus').textContent = fair ? 'Letting chance decide' : '';
+
+      function frame(now) {
+        const elapsed = now - start;
+        const t = Math.min(1, elapsed / duration);
+        const eased = easeOutCubic(t);
+        const rotation = eased * finalRotation;
+        drawWheel(ctx, slices, rotation);
+
+        const tickIndex = Math.floor(((rotation % (2 * Math.PI)) + 2 * Math.PI) / sliceAngle);
+        if (tickIndex !== lastTick) { vibrate(8); lastTick = tickIndex; }
+
+        if (t < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          if (!reducedMotion() && window.confetti) {
+            confetti({ particleCount: 120, spread: 75, origin: { y: 0.5 }, colors: ['#c9a15a', '#f1efe9', '#6f8f8a'] });
+          }
+          setTimeout(resolve, 500);
+        }
+      }
+      requestAnimationFrame(frame);
+    });
+  }
+
+  async function handleMatch(data) {
+    const pool = (data.wheel_ids && data.wheel_ids.length)
+      ? data.candidates.filter((c) => data.wheel_ids.includes(c.id))
+      : (data.ranking && data.ranking.length ? data.ranking : data.candidates);
+    const slices = pool.map((c) => ({ id: c.id, name: c.name, color: c.color }));
+    const engineLabel = data.engine ? data.engine.label : '';
+    $('#wheelSubStatus').textContent = engineLabel ? `via ${engineLabel}` : '';
+
+    await spinWheelTo(slices, data.winner.id, { fair: data.reason === 'fair_spin' });
+    renderReveal(data);
+    showView('view-reveal');
+  }
+
+  // ---------------------------------------------------------------------
+  // Mediator
+  // ---------------------------------------------------------------------
+  function handleTiebreaker(data) {
+    showView('view-mediator');
+    $('#mediatorEngineChip').textContent = data.engine ? `via ${data.engine.label}` : '';
+    $('#mediatorPrompt').textContent = data.question.prompt;
+    $('#roundLabel').textContent = `Round ${data.round + 1} of 2`;
+
+    const bars = $('#mediatorBars');
+    bars.innerHTML = '';
+    const maxP = Math.max(...data.contenders.map((c) => c.probability), 0.0001);
+    data.contenders.forEach((c) => {
+      const pct = Math.round(c.probability * 100);
+      const wrap = document.createElement('div');
+      wrap.innerHTML = `
+        <div class="flex justify-between text-xs mb-1 text-[var(--text-dim)]"><span>${c.name}</span><span>${pct}%</span></div>
+        <div class="h-1.5 rounded-full surface-2 overflow-hidden">
+          <div class="h-full rounded-full" style="width:${Math.max(4, (c.probability / maxP) * 100)}%;background:var(--accent)"></div>
+        </div>`;
+      bars.appendChild(wrap);
+    });
+
+    const devLine = $('#devMediatorLine');
+    if (state.devMode && data.comparison) {
+      devLine.classList.remove('hidden-view');
+      devLine.textContent = Object.entries(data.comparison)
+        .map(([id, c]) => c.error ? `${id}: n/a` : `${id}: ${c.top_name} ${Math.round(c.top_p * 100)}%`)
+        .join('   ');
+    } else {
+      devLine.classList.add('hidden-view');
+    }
+
+    const opts = $('#mediatorOptions');
+    opts.innerHTML = '';
+    data.question.options.forEach((opt) => {
+      const btn = document.createElement('button');
+      btn.className = 'btn-ghost rounded-xl h-20 flex items-center justify-center text-sm font-medium';
+      btn.textContent = opt.label;
+      btn.addEventListener('click', () => {
+        state.tiebreakers.push({ question_id: data.question.id, answer: opt.answer, text: opt.text });
+        state.round = data.round + 1;
+        submitDecision();
+      });
+      opts.appendChild(btn);
+    });
+
+    $('#justSpinBtn').onclick = () => { state.round = 2; submitDecision(); };
+  }
+
+  // ---------------------------------------------------------------------
+  // Reveal
+  // ---------------------------------------------------------------------
+  let leafletMap = null, leafletMarker = null, leafletUserMarker = null;
+
+  function renderReveal(data) {
+    const w = data.winner;
+    $('#winnerName').textContent = w.name;
+    $('#winnerMeta').textContent = `${w.cuisine} · ${w.price} · ${w.distance_km} km`;
+
+    const pct = Math.round(data.confidence * 100);
+    const engineLabel = data.engine ? data.engine.label : 'AI';
+    let badgeText = `${pct}% match · ${engineLabel}`;
+    if (data.engine && data.engine.fallback_from) badgeText = `${pct}% match · ${engineLabel} (fallback)`;
+    $('#matchBadge').textContent = badgeText;
+
+    const tagsBox = $('#winnerTags');
+    tagsBox.innerHTML = '';
+    (w.tags || []).forEach((t) => {
+      const s = document.createElement('span');
+      s.className = 'text-[11px] surface-2 rounded-full px-2.5 py-1 text-[var(--text-dim)]';
+      s.textContent = t.replace('_', ' ');
+      tagsBox.appendChild(s);
+    });
+
+    const p1hit = (w.tags || []).find((t) => state.p1.text.toLowerCase().includes(t.replace('_', ' ')));
+    const p2hit = (w.tags || []).find((t) => state.p2.text.toLowerCase().includes(t.replace('_', ' ')));
+    const recapParts = [];
+    if (p1hit) recapParts.push(`Partner One got: ${p1hit}`);
+    if (p2hit) recapParts.push(`Partner Two got: ${p2hit}`);
+    $('#partnerRecap').textContent = recapParts.join('   ·   ');
+
+    const devBox = $('#devComparison');
+    if (state.devMode && data.comparison) {
+      devBox.classList.remove('hidden-view');
+      const rows = Object.entries(data.comparison).map(([id, c]) => {
+        if (c.error) return `${id}: unavailable`;
+        const flag = c.primary ? '' : (c.agrees === false ? ' (disagrees)' : '');
+        return `${id}: ${Math.round(c.top_p * 100)}% → ${c.top_name}${flag} · ${c.latency_ms}ms`;
+      });
+      devBox.innerHTML = rows.join('<br>');
+    } else {
+      devBox.classList.add('hidden-view');
+    }
+
+    const runners = (data.ranking || []).filter((r) => r.id !== w.id).slice(0, 2);
+    $('#runnerUps').textContent = runners.length
+      ? 'Also considered: ' + runners.map((r) => `${r.name} (${Math.round(r.probability * 100)}%)`).join(', ')
+      : '';
+
+    const originLat = state.location ? state.location.lat : w.lat;
+    const originLng = state.location ? state.location.lng : w.lng;
+    $('#directionsBtn').href = `https://www.openstreetmap.org/directions?from=${originLat}%2C${originLng}&to=${w.lat}%2C${w.lng}`;
+
+    requestAnimationFrame(() => setTimeout(() => initMap(w), 350));
+  }
+
+  function initMap(winner) {
+    const container = $('#mapContainer');
+    if (!leafletMap) {
+      leafletMap = L.map(container, { attributionControl: true, zoomControl: true });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors',
+      }).addTo(leafletMap);
+    }
+    const pinIcon = L.divIcon({
+      html: '<svg width="26" height="26" viewBox="0 0 24 24" style="stroke:#c9a15a;fill:#c9a15a;filter:drop-shadow(0 2px 3px rgba(0,0,0,.6))"><path d="M12 21s7-6.5 7-12a7 7 0 1 0-14 0c0 5.5 7 12 7 12z"/><circle cx="12" cy="9" r="2.3" fill="#0b0b0d" stroke="none"/></svg>',
+      className: '', iconSize: [26, 26], iconAnchor: [13, 24],
+    });
+    if (leafletMarker) leafletMarker.setLatLng([winner.lat, winner.lng]);
+    else leafletMarker = L.marker([winner.lat, winner.lng], { icon: pinIcon }).addTo(leafletMap);
+    leafletMarker.bindPopup(`<b>${winner.name}</b><br>${Math.round((state.lastPayload.confidence || 0) * 100)}% match`);
+
+    const bounds = [[winner.lat, winner.lng]];
+    if (state.location) {
+      if (leafletUserMarker) leafletUserMarker.setLatLng([state.location.lat, state.location.lng]);
+      else leafletUserMarker = L.circleMarker([state.location.lat, state.location.lng], {
+        radius: 6, color: '#6f8f8a', fillColor: '#6f8f8a', fillOpacity: 0.9, weight: 2,
+      }).addTo(leafletMap);
+      bounds.push([state.location.lat, state.location.lng]);
+    }
+    if (bounds.length > 1) leafletMap.fitBounds(bounds, { padding: [40, 40] });
+    else leafletMap.setView(bounds[0], 15);
+    setTimeout(() => leafletMap.invalidateSize(), 100);
+  }
+
+  // ---------------------------------------------------------------------
+  // Start over
+  // ---------------------------------------------------------------------
+  function resetGame() {
+    state.p1.text = ''; state.p2.text = '';
+    state.tiebreakers = []; state.round = 0;
+    state.engineLocked = false;
+
+    $('#p1Text').value = ''; $('#p2Text').value = '';
+    $('#p1Text').disabled = false; $('#p1Text').classList.remove('blurred-text');
+    $('#p1Card').classList.remove('card-inactive');
+    $('#p1Status').textContent = 'Your turn';
+    $('#p1Status').style.color = 'var(--p1)';
+    $('#passToP2').classList.remove('hidden-view');
+    $('#passToP2').disabled = true;
+    micButtonFor(1).disabled = !speechAvailable();
+
+    $('#p2Text').disabled = true;
+    $('#p2Card').classList.add('card-inactive');
+    $('#p2Status').textContent = 'Waiting';
+    $('#p2Status').style.color = 'var(--text-faint)';
+    $all('.chip-btn[data-partner="2"]').forEach((b) => (b.disabled = true));
+    micButtonFor(2).disabled = true;
+
+    $('#wheelItBtn').classList.add('hidden-view');
+    renderEngineToggle();
+    showView('view-input');
+  }
+  $('#startOverBtn').addEventListener('click', resetGame);
+
+  // ---------------------------------------------------------------------
+  // Init
+  // ---------------------------------------------------------------------
+  setDevModeUI();
+  setupDevModeTrigger();
+  setupMics();
+  runSplash();
+})();
+</script>
+</body>
+</html>

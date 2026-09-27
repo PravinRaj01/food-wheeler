@@ -1,0 +1,7 @@
+flask==3.0.3
+gunicorn==22.0.0
+requests==2.32.3
+psutil==7.2.2
+laya==0.3.20
+gliner2==2.0.0
+peft==0.21.0
