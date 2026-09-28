@@ -5,7 +5,6 @@ import type {
   HealthResponse,
   Location,
   PlacesResponse,
-  RadiusTier,
 } from "@/lib/decide/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -75,11 +74,11 @@ export function apiUrl(path: string) {
 
 export async function listPlaces(
   location: Location | null,
-  tier: RadiusTier,
+  radiusKm: number,
   filters?: { cuisine?: string; diet?: string },
   signal?: AbortSignal,
 ): Promise<PlacesResponse> {
-  const params = new URLSearchParams({ tier });
+  const params = new URLSearchParams({ radius_km: String(radiusKm) });
   if (location) {
     params.set("lat", String(location.lat));
     params.set("lng", String(location.lng));

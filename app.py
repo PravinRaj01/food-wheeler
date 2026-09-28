@@ -19,7 +19,7 @@ from functools import wraps
 
 from flask import Flask, jsonify, request
 
-from candidates import DEFAULT_RADIUS_TIER, PRICE_TIER_MAX, RADIUS_TIERS_M, get_candidates, list_places, with_colors
+from candidates import DEFAULT_RADIUS_KM, PRICE_TIER_MAX, clamp_radius_km, get_candidates, list_places, with_colors
 from engines import (
     EngineManager,
     EngineScoreError,
@@ -337,10 +337,8 @@ def _validate(body: dict):
     source_in = body.get("source")
     engine_id = body.get("engine") or manager.default_id
     dev_mode = bool(body.get("dev_mode")) and DEV_MODE_ALLOWED
-    radius_tier = body.get("radius_tier") or DEFAULT_RADIUS_TIER
-    if radius_tier not in RADIUS_TIERS_M:
-        radius_tier = DEFAULT_RADIUS_TIER
-    return p1, p2, tiebreakers, round_num, location, candidates_in, source_in, engine_id, dev_mode, radius_tier
+    radius_km = clamp_radius_km(body.get("radius_km", DEFAULT_RADIUS_KM))
+    return p1, p2, tiebreakers, round_num, location, candidates_in, source_in, engine_id, dev_mode, radius_km
 
 
 # ---------------------------------------------------------------------------
@@ -530,14 +528,12 @@ def places_route():
     lng = request.args.get("lng", type=float)
     location = {"lat": lat, "lng": lng} if lat is not None and lng is not None else None
 
-    tier = request.args.get("tier") or DEFAULT_RADIUS_TIER
-    if tier not in RADIUS_TIERS_M:
-        tier = DEFAULT_RADIUS_TIER
+    radius_km = clamp_radius_km(request.args.get("radius_km", DEFAULT_RADIUS_KM, type=float))
     cuisine = request.args.get("cuisine") or None
     diet = request.args.get("diet") or None
 
-    places, source = list_places(location, radius_tier=tier, cuisine=cuisine, diet=diet)
-    return jsonify({"places": places, "source": source, "tier": tier})
+    places, source = list_places(location, radius_km=radius_km, cuisine=cuisine, diet=diet)
+    return jsonify({"places": places, "source": source, "radius_km": radius_km})
 
 
 @app.post("/api/engines/<engine_id>/warm")
@@ -551,7 +547,7 @@ def decide():
     body = request.get_json(silent=True) or {}
     try:
         (p1, p2, tiebreakers, round_num, location, candidates_in,
-         source_in, engine_id, dev_mode, radius_tier) = _validate(body)
+         source_in, engine_id, dev_mode, radius_km) = _validate(body)
     except ValidationError as e:
         return jsonify({"status": "error", "code": e.code, "message": e.message}), 400
 
@@ -569,7 +565,7 @@ def decide():
     if candidates_in:
         cands, source = candidates_in, source_in or "osm"
     else:
-        cands, source = get_candidates(location, radius_tier=radius_tier)
+        cands, source = get_candidates(location, radius_km=radius_km)
     cands = with_colors(cands)
 
     combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])

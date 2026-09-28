@@ -2,21 +2,21 @@
 
 import { useCallback, useRef } from "react";
 
-/** Triple-click (desktop) or triple-tap within 600ms (mobile, where
- * click.detail doesn't reliably reach 3) toggles dev mode. Spread the
- * returned handlers onto the title element. */
+/** Triple-click or triple-tap within 600ms toggles dev mode. Both handlers
+ * share one counter rather than trusting the browser's native
+ * `MouseEvent.detail` for the click case - `detail` resets to 1 on the
+ * slightest cursor movement between clicks (common on trackpads) or on a
+ * platform/OS multi-click timing window shorter than ours, so relying on it
+ * made the desktop trigger unreliable. An explicit counter+timer, the same
+ * approach already needed for touch (which never populates `detail`),
+ * behaves identically on both. Spread the returned handler onto the title
+ * element's onClick (covers mouse) - touch's click event after a tap covers
+ * mobile too, so no separate onTouchEnd is needed. */
 export function useDevModeTrigger(onToggle: () => void) {
   const tapsRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const onClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.detail === 3) onToggle();
-    },
-    [onToggle],
-  );
-
-  const onTouchEnd = useCallback(() => {
+  const onClick = useCallback(() => {
     tapsRef.current += 1;
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
@@ -28,5 +28,5 @@ export function useDevModeTrigger(onToggle: () => void) {
     }
   }, [onToggle]);
 
-  return { onClick, onTouchEnd };
+  return { onClick };
 }

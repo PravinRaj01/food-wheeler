@@ -10,7 +10,7 @@ const payload = (clientId: string, overrides: Partial<DecisionPayload> = {}): De
   engine: "laya",
   confidence: 0.9,
   reason: "confident",
-  radiusTier: "local",
+  radiusKm: 1.5,
   source: "osm",
   winner: {
     id: "a",

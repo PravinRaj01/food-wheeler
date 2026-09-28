@@ -1,4 +1,5 @@
-import type { Candidate, EngineId, Location, MatchResponse, RadiusTier, Tiebreaker, TiebreakerResponse } from "@/lib/decide/types";
+import { DEFAULT_RADIUS_KM } from "@/lib/decide/types";
+import type { Candidate, EngineId, Location, MatchResponse, Tiebreaker, TiebreakerResponse } from "@/lib/decide/types";
 
 export type Phase = "p1" | "handoff" | "p2" | "submitting" | "wheel" | "mediator" | "reveal";
 
@@ -13,7 +14,7 @@ export interface DecideState {
   source: "osm" | "mock" | null;
   tiebreakers: Tiebreaker[];
   round: number;
-  radiusTier: RadiusTier;
+  radiusKm: number;
   engine: EngineId;
   engineLocked: boolean;
   devMode: boolean;
@@ -29,7 +30,7 @@ export type Action =
   | { type: "HANDOFF_DONE" }
   | { type: "SET_LOCATION"; location: Location | null }
   | { type: "SET_ENGINE"; engine: EngineId }
-  | { type: "SET_RADIUS_TIER"; tier: RadiusTier }
+  | { type: "SET_RADIUS_KM"; km: number }
   | { type: "SEED_CANDIDATES"; candidates: Candidate[]; source: "osm" | "mock" }
   | { type: "TOGGLE_DEV_MODE" }
   | { type: "SET_DEV_MODE"; value: boolean }
@@ -54,7 +55,7 @@ export function initialState(engine: EngineId, devMode: boolean): DecideState {
     source: null,
     tiebreakers: [],
     round: 0,
-    radiusTier: "local",
+    radiusKm: DEFAULT_RADIUS_KM,
     engine,
     engineLocked: false,
     devMode,
@@ -78,8 +79,8 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
       return { ...state, location: action.location };
     case "SET_ENGINE":
       return state.engineLocked ? state : { ...state, engine: action.engine };
-    case "SET_RADIUS_TIER":
-      return state.engineLocked ? state : { ...state, radiusTier: action.tier, candidates: null, source: null };
+    case "SET_RADIUS_KM":
+      return state.engineLocked ? state : { ...state, radiusKm: action.km, candidates: null, source: null };
     case "SEED_CANDIDATES":
       return { ...state, candidates: action.candidates, source: action.source };
     case "TOGGLE_DEV_MODE":
@@ -124,7 +125,7 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
       return {
         ...initialState(state.engine, state.devMode),
         location: state.location, // keep location permission and radius
-        radiusTier: state.radiusTier, // preference across rounds
+        radiusKm: state.radiusKm, // preference across rounds
       };
     default:
       return state;

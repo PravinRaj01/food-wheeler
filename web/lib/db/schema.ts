@@ -1,6 +1,6 @@
 import { index, integer, jsonb, pgTable, primaryKey, real, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 import type { AdapterAccountType } from "next-auth/adapters";
-import type { Candidate, EngineId, RadiusTier, Tiebreaker } from "@/lib/decide/types";
+import type { Candidate, EngineId, Tiebreaker } from "@/lib/decide/types";
 
 // Single source of truth for the database. Two groups of tables, same split
 // as the Bill-a project this was ported from:
@@ -70,7 +70,7 @@ export const decisions = pgTable(
     engine: text("engine").$type<EngineId>().notNull(),
     confidence: real("confidence").notNull(),
     reason: text("reason").notNull(),
-    radiusTier: text("radius_tier").$type<RadiusTier>().notNull(),
+    radiusKm: real("radius_km").notNull(),
     source: text("source").notNull(),
     winner: jsonb("winner").$type<Candidate>().notNull(),
     runnerUps: jsonb("runner_ups").$type<{ id: string; name: string; probability: number }[]>().notNull(),
@@ -88,7 +88,7 @@ export const preferences = pgTable("preferences", {
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
   defaultEngine: text("default_engine").$type<EngineId>().notNull().default("laya"),
-  defaultRadiusTier: text("default_radius_tier").$type<RadiusTier>().notNull().default("local"),
+  defaultRadiusKm: real("default_radius_km").notNull().default(1.5),
   voiceLanguage: text("voice_language").notNull().default("en-US"),
   soundEnabled: text("sound_enabled").notNull().default("0"), // "0"/"1" - kept as text to match localStorage's own encoding
 });

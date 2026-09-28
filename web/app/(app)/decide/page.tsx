@@ -15,8 +15,9 @@ import { enqueueDecision } from "@/lib/sync/outbox";
 import { ToastStack } from "@/components/toast-stack";
 import { PartnerCard } from "@/components/decide/partner-card";
 import { EngineToggle } from "@/components/decide/engine-toggle";
-import { RadiusTierChips } from "@/components/decide/radius-tier-chips";
+import { RadiusSlider } from "@/components/decide/radius-slider";
 import { HandoffScreen } from "@/components/decide/handoff-screen";
+import { DecidingSequence } from "@/components/decide/deciding-sequence";
 import { Wheel, slicesFromRanking } from "@/components/decide/wheel";
 import { MediatorPanel } from "@/components/decide/mediator-panel";
 import { RevealPanel } from "@/components/decide/reveal-panel";
@@ -59,7 +60,7 @@ export default function DecidePage() {
       engine: m.engine.id,
       confidence: m.confidence,
       reason: m.reason,
-      radiusTier: state.radiusTier,
+      radiusKm: state.radiusKm,
       source: m.source,
       winner: m.winner,
       runnerUps: m.ranking.filter((r) => r.id !== m.winner.id).slice(0, 5),
@@ -68,7 +69,7 @@ export default function DecidePage() {
       /* the outbox write itself failing (e.g. IndexedDB unavailable) just
          means this one decision won't be in History - never block the UI */
     });
-  }, [state.phase, state.lastMatch, state.p1Text, state.p2Text, state.radiusTier, state.tiebreakers, userId]);
+  }, [state.phase, state.lastMatch, state.p1Text, state.p2Text, state.radiusKm, state.tiebreakers, userId]);
 
   // Restore stored preferences post-mount only, so server and the first
   // client render match (see lib/safe-storage.ts) and there's no hydration
@@ -149,7 +150,7 @@ export default function DecidePage() {
         source: state.source,
         tiebreakers: overrides?.tiebreakers ?? state.tiebreakers,
         round: overrides?.round ?? state.round,
-        radius_tier: state.radiusTier,
+        radius_km: state.radiusKm,
       };
       try {
         const res = await decide(body);
@@ -165,7 +166,7 @@ export default function DecidePage() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.engine, state.devMode, state.p1Text, state.p1Mode, state.p2Text, state.p2Mode, geo.location, state.candidates, state.source, state.tiebreakers, state.round, state.radiusTier],
+    [state.engine, state.devMode, state.p1Text, state.p1Mode, state.p2Text, state.p2Mode, geo.location, state.candidates, state.source, state.tiebreakers, state.round, state.radiusKm],
   );
 
   const resetGame = () => dispatch({ type: "RESET" });
@@ -182,7 +183,6 @@ export default function DecidePage() {
           <h1
             className="font-display cursor-default text-lg font-semibold tracking-tight select-none"
             onClick={devTrigger.onClick}
-            onTouchEnd={devTrigger.onTouchEnd}
           >
             Food Wheeler{state.devMode && <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] tracking-wide text-cream/50 uppercase">Dev</span>}
           </h1>
@@ -198,10 +198,10 @@ export default function DecidePage() {
 
         {(state.phase === "p1" || state.phase === "p2") && (
           <div className="mt-4">
-            <RadiusTierChips
-              selected={state.radiusTier}
+            <RadiusSlider
+              km={state.radiusKm}
               locked={state.engineLocked}
-              onSelect={(tier) => dispatch({ type: "SET_RADIUS_TIER", tier })}
+              onChange={(km) => dispatch({ type: "SET_RADIUS_KM", km })}
             />
           </div>
         )}
@@ -258,12 +258,7 @@ export default function DecidePage() {
           <HandoffScreen key="handoff" onDone={() => dispatch({ type: "HANDOFF_DONE" })} />
         )}
 
-        {state.phase === "submitting" && (
-          <div key="submitting" role="status" aria-live="polite" className="flex flex-col items-center gap-3 py-24 text-center">
-            <div className="h-10 w-10 animate-spin rounded-full border-2 border-line border-t-ember" />
-            <p className="text-sm text-cream/60">Finding your table…</p>
-          </div>
-        )}
+        {state.phase === "submitting" && <DecidingSequence key="submitting" />}
 
         {state.phase === "wheel" && state.lastMatch && (
           <div key="wheel" className="py-8">

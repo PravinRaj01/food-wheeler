@@ -6,8 +6,9 @@ import { MapPin } from "lucide-react";
 import { listPlaces } from "@/lib/api";
 import { useGeolocation } from "@/lib/hooks/use-geolocation";
 import { cn } from "@/lib/utils";
-import type { Place, RadiusTier } from "@/lib/decide/types";
-import { RadiusTierChips } from "@/components/decide/radius-tier-chips";
+import type { Place } from "@/lib/decide/types";
+import { DEFAULT_RADIUS_KM } from "@/lib/decide/types";
+import { RadiusSlider } from "@/components/decide/radius-slider";
 import { PlaceCard } from "@/components/explore/place-card";
 
 const ExploreMap = dynamic(() => import("@/components/explore/explore-map").then((m) => m.ExploreMap), {
@@ -25,7 +26,7 @@ const DIET_FILTERS: { id: string | null; label: string }[] = [
 
 export default function ExplorePage() {
   const geo = useGeolocation();
-  const [tier, setTier] = useState<RadiusTier>("local");
+  const [radiusKm, setRadiusKm] = useState(DEFAULT_RADIUS_KM);
   const [cuisine, setCuisine] = useState("All");
   const [diet, setDiet] = useState<string | null>(null);
   const [places, setPlaces] = useState<Place[]>([]);
@@ -43,7 +44,7 @@ export default function ExplorePage() {
     // a data-fetching library just to satisfy the linter.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    listPlaces(geo.location, tier, { cuisine: cuisine === "All" ? undefined : cuisine, diet: diet ?? undefined })
+    listPlaces(geo.location, radiusKm, { cuisine: cuisine === "All" ? undefined : cuisine, diet: diet ?? undefined })
       .then((res) => {
         if (cancelled) return;
         setPlaces(res.places);
@@ -59,7 +60,7 @@ export default function ExplorePage() {
     return () => {
       cancelled = true;
     };
-  }, [geo.location, tier, cuisine, diet]);
+  }, [geo.location, radiusKm, cuisine, diet]);
 
   return (
     <div className="flex h-[calc(100dvh-3.5rem)] flex-col md:flex-row">
@@ -87,7 +88,7 @@ export default function ExplorePage() {
           </button>
         </div>
 
-        <RadiusTierChips selected={tier} locked={false} onSelect={setTier} />
+        <RadiusSlider km={radiusKm} locked={false} onChange={setRadiusKm} />
 
         <div className="flex flex-wrap gap-1.5">
           {CUISINE_FILTERS.map((c) => (

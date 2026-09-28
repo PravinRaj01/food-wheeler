@@ -31,7 +31,7 @@ export const decisionSchema = z.object({
   engine: z.enum(["laya", "gliner", "clm_8b"]),
   confidence: z.number().min(0).max(1),
   reason: z.string().max(40),
-  radiusTier: z.enum(["local", "city", "roadtrip"]),
+  radiusKm: z.number().min(1).max(50),
   source: z.enum(["osm", "mock"]),
   winner: candidateSchema,
   runnerUps: z.array(z.object({ id: z.string(), name: z.string(), probability: z.number() })).max(10),

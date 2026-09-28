@@ -119,14 +119,14 @@ describe("warmEngine", () => {
 });
 
 describe("listPlaces", () => {
-  it("builds query params from the tier, location and filters", async () => {
+  it("builds query params from the radius, location and filters", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ places: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await listPlaces({ lat: 3.1, lng: 101.6 }, "city", { cuisine: "thai", diet: "halal" });
+    await listPlaces({ lat: 3.1, lng: 101.6 }, 5, { cuisine: "thai", diet: "halal" });
 
     const url = new URL(fetchMock.mock.calls[0][0]);
-    expect(url.searchParams.get("tier")).toBe("city");
+    expect(url.searchParams.get("radius_km")).toBe("5");
     expect(url.searchParams.get("lat")).toBe("3.1");
     expect(url.searchParams.get("lng")).toBe("101.6");
     expect(url.searchParams.get("cuisine")).toBe("thai");
@@ -137,7 +137,7 @@ describe("listPlaces", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ places: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await listPlaces(null, "local");
+    await listPlaces(null, 1.5);
 
     const url = new URL(fetchMock.mock.calls[0][0]);
     expect(url.searchParams.has("lat")).toBe(false);
@@ -146,6 +146,6 @@ describe("listPlaces", () => {
 
   it("throws an ApiError on a non-ok response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, { ok: false, status: 500 })));
-    await expect(listPlaces(null, "local")).rejects.toThrow(ApiError);
+    await expect(listPlaces(null, 1.5)).rejects.toThrow(ApiError);
   });
 });

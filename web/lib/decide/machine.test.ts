@@ -52,7 +52,7 @@ describe("initialState", () => {
     expect(s.engine).toBe("gliner");
     expect(s.devMode).toBe(true);
     expect(s.engineLocked).toBe(false);
-    expect(s.radiusTier).toBe("local");
+    expect(s.radiusKm).toBe(1.5);
   });
 });
 
@@ -102,18 +102,18 @@ describe("decideReducer", () => {
     expect(s.engine).toBe("gliner");
   });
 
-  it("SET_RADIUS_TIER clears any previously fetched candidates so the next submit re-fetches for the new tier", () => {
+  it("SET_RADIUS_KM clears any previously fetched candidates so the next submit re-fetches for the new radius", () => {
     const withCandidates = { ...initialState("laya", false), candidates: [candidate("a")], source: "osm" as const };
-    const s = decideReducer(withCandidates, { type: "SET_RADIUS_TIER", tier: "roadtrip" });
-    expect(s.radiusTier).toBe("roadtrip");
+    const s = decideReducer(withCandidates, { type: "SET_RADIUS_KM", km: 15 });
+    expect(s.radiusKm).toBe(15);
     expect(s.candidates).toBeNull();
     expect(s.source).toBeNull();
   });
 
-  it("SET_RADIUS_TIER is ignored once the engine is locked", () => {
+  it("SET_RADIUS_KM is ignored once the engine is locked", () => {
     const locked = { ...initialState("laya", false), engineLocked: true };
-    const s = decideReducer(locked, { type: "SET_RADIUS_TIER", tier: "city" });
-    expect(s.radiusTier).toBe("local");
+    const s = decideReducer(locked, { type: "SET_RADIUS_KM", km: 5 });
+    expect(s.radiusKm).toBe(1.5);
   });
 
   it("SEED_CANDIDATES sets candidates and source regardless of lock state", () => {
@@ -202,7 +202,7 @@ describe("decideReducer", () => {
       p2Text: "casual",
       engineLocked: true,
       location: { lat: 1, lng: 2 },
-      radiusTier: "roadtrip" as const,
+      radiusKm: 15,
       tiebreakers: [{ question_id: "q", answer: "a", text: "A" }],
     };
     const s = decideReducer(played, { type: "RESET" });
@@ -212,7 +212,7 @@ describe("decideReducer", () => {
     expect(s.engineLocked).toBe(false);
     expect(s.tiebreakers).toEqual([]);
     expect(s.location).toEqual({ lat: 1, lng: 2 });
-    expect(s.radiusTier).toBe("roadtrip");
+    expect(s.radiusKm).toBe(15);
     // devMode and engine survive RESET too, since initialState is seeded from them.
     expect(s.devMode).toBe(true);
   });

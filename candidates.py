@@ -18,18 +18,22 @@ CACHE_TTL_S = 600  # 10 minutes
 MIN_RESULTS_BEFORE_WIDEN = 5
 MIN_RESULTS_BEFORE_FALLBACK = 3
 
-# Radius tiers ("the Expand Radius flex" - Phase 4). "local" widens to a
-# second, larger radius if too few results come back nearby; "city" and
-# "roadtrip" query their full radius directly since a sparse result at 5-15km
-# usually just means a sparse area, not a bad first guess.
-RADIUS_TIERS_M = {"local": 1500, "city": 5000, "roadtrip": 15000}
-WIDEN_RADIUS_M = {"local": 3000}
-MAX_CANDIDATES_BY_TIER = {"local": 6, "city": 8, "roadtrip": 8}
-# A wider radius can genuinely return hundreds of venues in a dense city;
-# capping the Overpass response keeps the query fast and the payload small.
-OVERPASS_RESULT_CAP = {"local": 200, "city": 300, "roadtrip": 400}
-OVERPASS_TIMEOUT_S_BY_TIER = {"local": 6, "city": 8, "roadtrip": 10}
-DEFAULT_RADIUS_TIER = "local"
+# Continuous radius control ("the Expand Radius flex" - Phase 4, later
+# widened from 3 fixed tiers to a free-form slider up to 50km). Every
+# Overpass-tuning knob below is derived from the requested radius by
+# _radius_params() rather than looked up from a fixed tier, so any value in
+# [RADIUS_KM_MIN, RADIUS_KM_MAX] works, not just a few presets.
+RADIUS_KM_MIN = 1.0
+RADIUS_KM_MAX = 50.0
+DEFAULT_RADIUS_KM = 1.5
+# A small starting radius widens to 2x itself if too few results come back
+# nearby; past this, a sparse result usually just means a sparse area, not a
+# bad first guess, so there's nothing to gain from retrying wider.
+WIDEN_THRESHOLD_KM = 2.5
+# Past this radius, candidates are spread thin enough that stratifying
+# picks across near/mid/far distance rings (see _select_diverse) instead of
+# just taking the nearest N, so far-away places genuinely show up.
+STRATIFY_THRESHOLD_KM = 8.0
 PLACES_LIST_LIMIT = 60
 
 # Rough price-tier ceilings in dollars, used only for the budget guard.
@@ -171,6 +175,36 @@ def _tags_list_from_osm(tags: dict, amenity: str) -> list[str]:
     return out or ["restaurant"]
 
 
+def clamp_radius_km(radius_km) -> float:
+    try:
+        radius_km = float(radius_km)
+    except (TypeError, ValueError):
+        return DEFAULT_RADIUS_KM
+    if radius_km != radius_km:  # NaN
+        return DEFAULT_RADIUS_KM
+    return max(RADIUS_KM_MIN, min(RADIUS_KM_MAX, radius_km))
+
+
+def _radius_params(radius_km: float) -> dict:
+    """Every Overpass-tuning knob, derived from the radius instead of a
+    fixed tier lookup. Values were chosen to land close to the original 3
+    hand-tuned tiers (local=1.5km/6s/200cap, city=5km/8s/300cap,
+    roadtrip=15km/10s/400cap) at those exact radii, then extend smoothly
+    beyond 15km up to the 50km max."""
+    timeout_s = round(max(6, min(15, 6 + (radius_km - 1.5) * 0.2)))
+    result_cap = round(max(200, min(600, 150 + radius_km * 9)))
+    max_candidates = 6 if radius_km <= 3 else 8
+    stratify = radius_km >= STRATIFY_THRESHOLD_KM
+    widen_km = radius_km * 2 if radius_km <= WIDEN_THRESHOLD_KM else None
+    return {
+        "timeout_s": timeout_s,
+        "result_cap": result_cap,
+        "max_candidates": max_candidates,
+        "stratify": stratify,
+        "widen_km": widen_km,
+    }
+
+
 def _fetch_overpass(lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int) -> list[dict] | None:
     query = f"""
     [out:json][timeout:{timeout_s}];
@@ -221,42 +255,34 @@ def _fetch_overpass(lat: float, lng: float, radius_m: int, timeout_s: int, resul
     return None
 
 
-def _fetch_for_tier(lat: float, lng: float, radius_m: int, radius_tier: str) -> list[dict] | None:
+def _fetch_for_radius(lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int) -> list[dict] | None:
     cache_key = (round(lat, 3), round(lng, 3), radius_m)
     cached = _cache.get(cache_key)
     if cached and time.time() - cached[0] < CACHE_TTL_S:
         return cached[1]
-    results = _fetch_overpass(
-        lat, lng, radius_m,
-        timeout_s=OVERPASS_TIMEOUT_S_BY_TIER[radius_tier],
-        result_cap=OVERPASS_RESULT_CAP[radius_tier],
-    )
+    results = _fetch_overpass(lat, lng, radius_m, timeout_s=timeout_s, result_cap=result_cap)
     if results is not None:
         _cache[cache_key] = (time.time(), results)
     return results
 
 
-def get_candidates(location: dict | None, radius_tier: str = DEFAULT_RADIUS_TIER) -> tuple[list[dict], str]:
+def get_candidates(location: dict | None, radius_km: float = DEFAULT_RADIUS_KM) -> tuple[list[dict], str]:
     """Returns (candidates, source) where source is 'osm' or 'mock'. The AI
     decision engines see only this curated, capped list - see list_places()
     for the uncurated Explore browsing list."""
-    radius_tier = radius_tier if radius_tier in RADIUS_TIERS_M else DEFAULT_RADIUS_TIER
+    radius_km = clamp_radius_km(radius_km)
     if not location or location.get("lat") is None or location.get("lng") is None:
         return _mock_candidates(None, None), "mock"
 
     lat, lng = location["lat"], location["lng"]
-    radii = [RADIUS_TIERS_M[radius_tier]]
-    if radius_tier in WIDEN_RADIUS_M:
-        radii.append(WIDEN_RADIUS_M[radius_tier])
+    params = _radius_params(radius_km)
+    radii_km = [radius_km] + ([params["widen_km"]] if params["widen_km"] else [])
 
-    max_candidates = MAX_CANDIDATES_BY_TIER[radius_tier]
-    stratify = radius_tier == "roadtrip"
-
-    for i, radius_m in enumerate(radii):
-        results = _fetch_for_tier(lat, lng, radius_m, radius_tier)
+    for i, r_km in enumerate(radii_km):
+        results = _fetch_for_radius(lat, lng, round(r_km * 1000), params["timeout_s"], params["result_cap"])
         if results is not None and len(results) >= MIN_RESULTS_BEFORE_FALLBACK:
-            if len(results) >= MIN_RESULTS_BEFORE_WIDEN or i == len(radii) - 1:
-                return _select_diverse(results, max_candidates, stratify=stratify), "osm"
+            if len(results) >= MIN_RESULTS_BEFORE_WIDEN or i == len(radii_km) - 1:
+                return _select_diverse(results, params["max_candidates"], stratify=params["stratify"]), "osm"
 
     return _mock_candidates(lat, lng), "mock"
 
@@ -315,21 +341,21 @@ def _select_diverse(results: list[dict], max_candidates: int, stratify: bool = F
 
 def list_places(
     location: dict | None,
-    radius_tier: str = DEFAULT_RADIUS_TIER,
+    radius_km: float = DEFAULT_RADIUS_KM,
     cuisine: str | None = None,
     diet: str | None = None,
     limit: int = PLACES_LIST_LIMIT,
 ) -> tuple[list[dict], str]:
     """The Explore page's uncurated browsing list - up to `limit` places,
     nearest first, with simple cuisine/diet filters. No AI involved."""
-    radius_tier = radius_tier if radius_tier in RADIUS_TIERS_M else DEFAULT_RADIUS_TIER
+    radius_km = clamp_radius_km(radius_km)
 
     if not location or location.get("lat") is None or location.get("lng") is None:
         results, source = _mock_candidates(None, None), "mock"
     else:
         lat, lng = location["lat"], location["lng"]
-        radius_m = RADIUS_TIERS_M[radius_tier]
-        fetched = _fetch_for_tier(lat, lng, radius_m, radius_tier)
+        params = _radius_params(radius_km)
+        fetched = _fetch_for_radius(lat, lng, round(radius_km * 1000), params["timeout_s"], params["result_cap"])
         if fetched is not None and len(fetched) >= MIN_RESULTS_BEFORE_FALLBACK:
             results, source = fetched, "osm"
         else:

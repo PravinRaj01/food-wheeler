@@ -2,7 +2,21 @@
 // sync by hand - there's no shared schema between the two languages.
 
 export type EngineId = "laya" | "gliner" | "clm_8b";
-export type RadiusTier = "local" | "city" | "roadtrip";
+
+// Mirrors candidates.py's RADIUS_KM_MIN/MAX/DEFAULT_RADIUS_KM. The search
+// radius is a free-form slider, not a fixed set of tiers - every
+// Overpass-tuning knob on the backend is derived from this single number.
+export const RADIUS_KM_MIN = 1;
+export const RADIUS_KM_MAX = 50;
+export const DEFAULT_RADIUS_KM = 1.5;
+// Quick-pick points the slider can jump to, matching the original 3 tiers'
+// values so "Local/City/Road Trip" stay meaningful presets on top of the
+// slider rather than disappearing.
+export const RADIUS_PRESETS_KM = [
+  { km: 1.5, label: "Local" },
+  { km: 5, label: "City" },
+  { km: 15, label: "Road Trip" },
+] as const;
 
 export interface Candidate {
   id: string;
@@ -80,7 +94,7 @@ export interface DecideRequest {
   source: "osm" | "mock" | null;
   tiebreakers: Tiebreaker[];
   round: number;
-  radius_tier: RadiusTier;
+  radius_km: number;
 }
 
 export interface MatchResponse {
@@ -144,5 +158,5 @@ export type Place = Candidate;
 export interface PlacesResponse {
   places: Place[];
   source: "osm" | "mock";
-  tier: RadiusTier;
+  radius_km: number;
 }
