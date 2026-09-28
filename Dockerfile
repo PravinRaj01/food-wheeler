@@ -15,7 +15,9 @@ ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH \
     HF_HOME=/home/user/.cache/huggingface \
     PYTHONUNBUFFERED=1 \
-    PYTHONUTF8=1
+    PYTHONUTF8=1 \
+    OMP_NUM_THREADS=2 \
+    TORCH_NUM_THREADS=2
 
 WORKDIR /home/user/app
 

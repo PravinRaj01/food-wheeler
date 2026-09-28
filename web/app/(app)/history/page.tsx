@@ -24,7 +24,12 @@ export default async function HistoryPage() {
   const userId = await getUserIdOrNull();
   if (!userId) redirect("/login");
 
-  const rows = await listDecisionsForUser(getDb(), userId);
+  const allRows = await listDecisionsForUser(getDb(), userId);
+  // Demo-era rows (source "mock") are stale test data from before location
+  // enforcement existed - some sat thousands of km from wherever they were
+  // made. They're not a real decision the couple can revisit, so they're
+  // hidden here rather than deleted outright.
+  const rows = allRows.filter((row) => row.source !== "mock");
   const groups = groupByDay(rows);
 
   return (

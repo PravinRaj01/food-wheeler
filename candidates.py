@@ -1,14 +1,17 @@
 """
 Restaurant candidate sourcing for The Food-Wheeler.
 
-Tries the free OSM Overpass API for real nearby venues. The mock venue set
-("demo mode") is used ONLY when no location was given at all - if the
-caller supplied a real location, a fetch failure or a genuinely empty
-radius is surfaced as PlacesUnavailable instead of silently substituting
-demo places at the wrong end of the world (see PlacesUnavailable below).
+Tries the free OSM Overpass API for real nearby venues. There is no demo
+mode in production any more: get_candidates()/list_places() require a real
+location and raise LocationRequired without one. A fetch failure or a
+genuinely empty radius is surfaced as PlacesUnavailable, never silently
+substituted with demo places at the wrong end of the world (see
+PlacesUnavailable below). MOCK_RESTAURANTS survives only as fixture data for
+tests and scripts/compare_engines.py.
 """
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -17,7 +20,9 @@ OVERPASS_ENDPOINTS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 ]
-CACHE_TTL_S = 600  # 10 minutes
+CACHE_TTL_S = 6 * 60 * 60  # restaurants don't move; a long TTL means a
+# widened/prefetched radius during typing is very likely still warm by the
+# time "Find our table" actually calls get_candidates() with the same key.
 MIN_RESULTS_BEFORE_WIDEN = 5
 MIN_RESULTS_BEFORE_FALLBACK = 3
 # A client-side safety net against a stray out-of-circle result (Overpass's
@@ -31,13 +36,18 @@ class PlacesUnavailable(Exception):
     """Raised by get_candidates()/list_places() when a REAL location was
     given but nearby places couldn't be found - `kind` is "fetch" (every
     Overpass endpoint failed) or "empty" (fetched fine, genuinely nothing
-    within the radius). Only ever raised when location is not None; with no
-    location, returning the mock set is the intended, silent demo-mode
-    behavior, not an error."""
+    within the radius)."""
 
     def __init__(self, kind: str):
         self.kind = kind
         super().__init__(kind)
+
+
+class LocationRequired(Exception):
+    """Raised by get_candidates()/list_places() when no real location was
+    given at all. There is no demo-mode fallback any more - a couple with
+    location off gets asked to turn it on, never a restaurant list from the
+    wrong side of the planet."""
 
 # Continuous radius control ("the Expand Radius flex" - Phase 4, later
 # widened from 3 fixed tiers to a free-form slider up to 50km). Every
@@ -66,9 +76,10 @@ SLICE_COLORS = ["#c9a15a", "#3f6b66", "#8c4a4a", "#556080", "#7a8450", "#b5674a"
 
 _cache: dict[tuple[float, float, int], tuple[float, list[dict]]] = {}
 
-# Demo-mode venues, clustered around a fixed "demo city" point so the map
-# still looks realistic when geolocation is unavailable.
-DEMO_CENTER = (40.7306, -73.9866)  # a spot in NYC, used only as the demo anchor
+# Fixture venues for tests and scripts/compare_engines.py only - production
+# get_candidates()/list_places() never return these (see LocationRequired).
+# Kept clustered around a fixed point so distance-based tests stay readable.
+DEMO_CENTER = (40.7306, -73.9866)  # a spot in NYC, used only as the fixture anchor
 MOCK_RESTAURANTS = [
     {
         "id": "mock_casa_fuego",
@@ -228,6 +239,21 @@ def _radius_params(radius_km: float) -> dict:
     }
 
 
+def _query_overpass_endpoint(endpoint: str, query: str, headers: dict, http_timeout_s: int) -> dict | None:
+    try:
+        resp = requests.post(endpoint, data={"data": query}, headers=headers, timeout=http_timeout_s)
+        # 429 (rate limited) and 504 (gateway timeout) are exactly what a
+        # public, shared Overpass mirror does under load - treating that the
+        # same as a connection failure (falling through to another mirror)
+        # is the right response, not a hard failure. raise_for_status()
+        # raises HTTPError for both (a RequestException subclass), so the
+        # except below already covers them the same way.
+        resp.raise_for_status()
+        return resp.json()
+    except (requests.RequestException, ValueError):
+        return None
+
+
 def _fetch_overpass(lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int) -> list[dict] | None:
     query = f"""
     [out:json][timeout:{timeout_s}];
@@ -242,50 +268,60 @@ def _fetch_overpass(lat: float, lng: float, radius_m: int, timeout_s: int, resul
     # [timeout:] so Overpass gets the chance to reply with its own timeout
     # error (still caught below) instead of us cutting the socket first.
     http_timeout_s = timeout_s + 5
-    for endpoint in OVERPASS_ENDPOINTS:
-        try:
-            resp = requests.post(
-                endpoint, data={"data": query}, headers=headers, timeout=http_timeout_s
-            )
-            # 429 (rate limited) and 504 (gateway timeout) are exactly what
-            # a public, shared Overpass mirror does under load - falling
-            # through to the next mirror is the right response, not a hard
-            # failure. raise_for_status() raises HTTPError for both (a
-            # RequestException subclass), so the except below already
-            # covers them the same way as a connection failure.
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, ValueError):
-            continue
 
-        results = []
-        for i, el in enumerate(data.get("elements", [])):
-            tags = el.get("tags", {})
-            name = tags.get("name")
-            if not name:
-                continue
-            if el["type"] == "node":
-                elat, elng = el.get("lat"), el.get("lon")
-            else:
-                center = el.get("center") or {}
-                elat, elng = center.get("lat"), center.get("lon")
-            if elat is None or elng is None:
-                continue
-            amenity = tags.get("amenity", "restaurant")
-            cuisine = (tags.get("cuisine") or amenity).replace("_", " ").title()
-            results.append({
-                "id": f"osm_{el['type']}_{el['id']}",
-                "name": name,
-                "cuisine": cuisine,
-                "tags": _tags_list_from_osm(tags, amenity),
-                "price": _price_from_amenity(amenity),
-                "lat": elat, "lng": elng,
-                "address": tags.get("addr:street", "") or "Nearby",
-                "dims": _dims_from_tags(tags, amenity),
-                "distance_km": round(haversine_km(lat, lng, elat, elng), 2),
-            })
-        return results
-    return None
+    # Every mirror is queried AT ONCE and whichever answers first wins,
+    # instead of trying them one after another - trying 3 mirrors serially
+    # at a ~23s timeout each meant a genuinely bad radius could take over a
+    # minute to fail, well past the frontend's 45s budget. In parallel, the
+    # worst case is one timeout, not three stacked.
+    executor = ThreadPoolExecutor(max_workers=len(OVERPASS_ENDPOINTS))
+    futures = {
+        executor.submit(_query_overpass_endpoint, ep, query, headers, http_timeout_s): ep
+        for ep in OVERPASS_ENDPOINTS
+    }
+    data = None
+    try:
+        for fut in as_completed(futures):
+            result = fut.result()
+            if result is not None:
+                data = result
+                break
+    finally:
+        # Don't block the winner on the slower mirrors finishing - any
+        # still-running request threads are simply left to finish (or time
+        # out) on their own and are discarded.
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    if data is None:
+        return None
+
+    results = []
+    for el in data.get("elements", []):
+        tags = el.get("tags", {})
+        name = tags.get("name")
+        if not name:
+            continue
+        if el["type"] == "node":
+            elat, elng = el.get("lat"), el.get("lon")
+        else:
+            center = el.get("center") or {}
+            elat, elng = center.get("lat"), center.get("lon")
+        if elat is None or elng is None:
+            continue
+        amenity = tags.get("amenity", "restaurant")
+        cuisine = (tags.get("cuisine") or amenity).replace("_", " ").title()
+        results.append({
+            "id": f"osm_{el['type']}_{el['id']}",
+            "name": name,
+            "cuisine": cuisine,
+            "tags": _tags_list_from_osm(tags, amenity),
+            "price": _price_from_amenity(amenity),
+            "lat": elat, "lng": elng,
+            "address": tags.get("addr:street", "") or "Nearby",
+            "dims": _dims_from_tags(tags, amenity),
+            "distance_km": round(haversine_km(lat, lng, elat, elng), 2),
+        })
+    return results
 
 
 def _fetch_for_radius(lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int) -> list[dict] | None:
@@ -308,12 +344,12 @@ def get_candidates(location: dict | None, radius_km: float = DEFAULT_RADIUS_KM) 
     decision engines see only this curated, capped list - see list_places()
     for the uncurated Explore browsing list.
 
-    Raises PlacesUnavailable if a real location was given but nothing
-    usable came back - see that class's docstring for why this must never
-    silently substitute the mock set in that case."""
+    Raises LocationRequired with no location at all, and PlacesUnavailable
+    if a real location was given but nothing usable came back - see each
+    class's docstring."""
     radius_km = clamp_radius_km(radius_km)
     if not location or location.get("lat") is None or location.get("lng") is None:
-        return _mock_candidates(None, None), "mock"
+        raise LocationRequired()
 
     lat, lng = location["lat"], location["lng"]
     params = _radius_params(radius_km)
@@ -408,22 +444,22 @@ def list_places(
     """The Explore page's uncurated browsing list - up to `limit` places,
     nearest first, with simple cuisine/diet filters. No AI involved.
 
-    Raises PlacesUnavailable on the same terms as get_candidates() - see
-    that function's docstring."""
+    Raises LocationRequired with no location at all, and PlacesUnavailable
+    on the same terms as get_candidates() - see each class's docstring."""
     radius_km = clamp_radius_km(radius_km)
 
     if not location or location.get("lat") is None or location.get("lng") is None:
-        results, source = _mock_candidates(None, None), "mock"
-    else:
-        lat, lng = location["lat"], location["lng"]
-        params = _radius_params(radius_km)
-        fetched = _fetch_for_radius(lat, lng, round(radius_km * 1000), params["timeout_s"], params["result_cap"])
-        if fetched is None:
-            raise PlacesUnavailable("fetch")
-        fetched = _within_radius(fetched, radius_km)
-        if not fetched:
-            raise PlacesUnavailable("empty")
-        results, source = fetched, "osm"
+        raise LocationRequired()
+
+    lat, lng = location["lat"], location["lng"]
+    params = _radius_params(radius_km)
+    fetched = _fetch_for_radius(lat, lng, round(radius_km * 1000), params["timeout_s"], params["result_cap"])
+    if fetched is None:
+        raise PlacesUnavailable("fetch")
+    fetched = _within_radius(fetched, radius_km)
+    if not fetched:
+        raise PlacesUnavailable("empty")
+    results, source = fetched, "osm"
 
     if cuisine:
         needle = cuisine.lower()

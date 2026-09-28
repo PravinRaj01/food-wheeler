@@ -18,11 +18,23 @@ interface LocationContextValue {
    * independent of whether a fix is currently `granted` (e.g. mid-fetch,
    * or temporarily `denied` after a timeout). */
   enabled: boolean;
-  /** Persists the preference and requests a fresh fix. Resolves true if a
-   * location was obtained. Only ever called from a user action (a Settings
-   * switch or the submit-time drawer) - never on its own. */
-  enable: () => Promise<boolean>;
+  /** Persists the preference and requests a fresh fix, resolving with the
+   * location itself (or null if it couldn't be obtained). Only ever called
+   * from a user action (a Settings switch or the submit-time drawer) -
+   * never on its own. Resolving with the value directly - not just true/
+   * false - matters: a caller that turns around and submits a request
+   * right after needs THIS location, not whatever `location` happens to be
+   * on its next render (a real bug this app hit: submitting immediately
+   * after enable() used a stale, pre-fetch closure and sent location: null
+   * even though the fix had just been granted). */
+  enable: () => Promise<Location | null>;
   disable: () => void;
+  /** Returns the current location if already granted, otherwise requests a
+   * fresh fix - the same "resolve with the real value" guarantee as
+   * enable(), for a submit-time caller that doesn't know (or care) whether
+   * a fix is already in hand. Never persists the preference or prompts
+   * unasked; only meaningful when `enabled` is already true. */
+  ensureLocation: () => Promise<Location | null>;
 }
 
 const LocationContext = createContext<LocationContextValue | null>(null);
@@ -117,18 +129,18 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
   const enabled = useSyncExternalStore(subscribeNoop, isLocationEnabled, getServerSnapshot);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const fetchPosition = useCallback((): Promise<boolean> => {
+  const fetchPosition = useCallback((): Promise<Location | null> => {
     return new Promise((resolve) => {
       if (!("geolocation" in navigator)) {
         dispatch({ type: "SET_STATUS", status: "denied" });
-        resolve(false);
+        resolve(null);
         return;
       }
       dispatch({ type: "SET_STATUS", status: "locating" });
       clearTimeout(timeoutRef.current);
       timeoutRef.current = setTimeout(() => {
         dispatch({ type: "TIMED_OUT_IF_STILL_LOCATING" });
-        resolve(false);
+        resolve(null);
       }, GEO_TIMEOUT_MS);
 
       navigator.geolocation.getCurrentPosition(
@@ -141,12 +153,12 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
           };
           writeCachedLocation(loc);
           dispatch({ type: "SET_LOCATION", location: loc });
-          resolve(true);
+          resolve(loc);
         },
         (err) => {
           clearTimeout(timeoutRef.current);
           dispatch({ type: "SET_STATUS", status: err.code === err.PERMISSION_DENIED ? "blocked" : "denied" });
-          resolve(false);
+          resolve(null);
         },
         { timeout: 8000, maximumAge: 5 * 60 * 1000 },
       );
@@ -158,6 +170,11 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
     bumpVersion();
     return fetchPosition();
   }, [fetchPosition]);
+
+  const ensureLocation = useCallback(async (): Promise<Location | null> => {
+    if (status === "granted" && location) return location;
+    return fetchPosition();
+  }, [status, location, fetchPosition]);
 
   const disable = useCallback(() => {
     local.set(ENABLED_KEY, "0");
@@ -202,7 +219,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <LocationContext.Provider value={{ status, location, enabled, enable, disable }}>
+    <LocationContext.Provider value={{ status, location, enabled, enable, disable, ensureLocation }}>
       {children}
     </LocationContext.Provider>
   );

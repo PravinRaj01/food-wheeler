@@ -83,6 +83,32 @@ def test_radius_params_only_stratifies_past_the_threshold():
     assert candidates._radius_params(30)["stratify"] is True
 
 
+# --- Overpass mirror racing --------------------------------------------------
+
+def test_fetch_overpass_uses_first_successful_mirror():
+    # Mirrors are queried in parallel now, not one after another - a mirror
+    # earlier in OVERPASS_ENDPOINTS failing must not stop a later one's
+    # success from being used.
+    def fake_query(endpoint, query, headers, http_timeout_s):
+        if endpoint == candidates.OVERPASS_ENDPOINTS[0]:
+            return None
+        return {"elements": [{
+            "type": "node", "id": 1, "lat": 1.001, "lon": 1.001,
+            "tags": {"name": "Test Place", "amenity": "restaurant"},
+        }]}
+
+    with patch.object(candidates, "_query_overpass_endpoint", side_effect=fake_query):
+        results = candidates._fetch_overpass(1.0, 1.0, 1000, timeout_s=8, result_cap=50)
+    assert results is not None
+    assert results[0]["name"] == "Test Place"
+
+
+def test_fetch_overpass_returns_none_when_every_mirror_fails():
+    with patch.object(candidates, "_query_overpass_endpoint", return_value=None):
+        results = candidates._fetch_overpass(1.0, 1.0, 1000, timeout_s=8, result_cap=50)
+    assert results is None
+
+
 # --- get_candidates ----------------------------------------------------------
 
 def test_get_candidates_uses_the_given_radius_in_meters():
@@ -168,12 +194,16 @@ def test_get_candidates_raises_when_real_fetch_is_empty():
     assert exc_info.value.kind == "empty"
 
 
-def test_get_candidates_never_raises_with_no_location():
-    # No location at all means demo mode - PlacesUnavailable is only ever
-    # for a REAL location that came up empty.
-    cands, source = candidates.get_candidates(None, radius_km=5)
-    assert source == "mock"
-    assert len(cands) == len(candidates.MOCK_RESTAURANTS)
+def test_get_candidates_requires_a_real_location():
+    # No demo mode any more - no location at all is a hard stop, not a
+    # silent NYC mock list.
+    with pytest.raises(candidates.LocationRequired):
+        candidates.get_candidates(None, radius_km=5)
+
+
+def test_get_candidates_requires_lat_and_lng_together():
+    with pytest.raises(candidates.LocationRequired):
+        candidates.get_candidates({"lat": 1.0}, radius_km=5)
 
 
 def test_get_candidates_filters_out_of_radius_results():
@@ -187,6 +217,11 @@ def test_get_candidates_filters_out_of_radius_results():
     with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch):
         cands, source = candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
     assert [c["id"] for c in cands] == ["near"]
+
+
+def test_list_places_requires_a_real_location():
+    with pytest.raises(candidates.LocationRequired):
+        candidates.list_places(None, radius_km=5)
 
 
 def test_list_places_raises_when_every_endpoint_fails():
@@ -275,10 +310,12 @@ def test_places_route_returns_json(client):
     assert data["places"][0]["id"] == "a"
 
 
-def test_places_route_without_location_uses_mock(client):
+def test_places_route_without_location_returns_400(client):
     resp = client.get("/api/places")
+    assert resp.status_code == 400
     data = resp.get_json()
-    assert data["source"] == "mock"
+    assert data["status"] == "error"
+    assert data["code"] == "LOCATION_REQUIRED"
 
 
 def test_places_route_rejects_garbage_radius_gracefully(client):

@@ -53,11 +53,6 @@ export function RevealPanel({
     >
       <div className="mb-2 flex items-center gap-2">
         <p className="text-[11px] tracking-[0.15em] text-cream/40 uppercase">Tonight&apos;s table</p>
-        {response.source === "mock" && (
-          <span className="rounded-full bg-black/25 px-2 py-0.5 text-[10px] font-medium tracking-wide text-cream/50 uppercase">
-            Demo places
-          </span>
-        )}
       </div>
       <div className="mb-1 flex items-start justify-between gap-3">
         <h2 className="font-display text-2xl leading-tight text-cream">{w.name}</h2>

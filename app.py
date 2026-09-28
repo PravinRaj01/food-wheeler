@@ -32,8 +32,8 @@ if hasattr(sys.stdout, "reconfigure"):
 from flask import Flask, jsonify, request
 
 from candidates import (
-    DEFAULT_RADIUS_KM, PRICE_TIER_MAX, PlacesUnavailable, clamp_radius_km,
-    get_candidates, list_places, with_colors,
+    DEFAULT_RADIUS_KM, PRICE_TIER_MAX, LocationRequired, PlacesUnavailable,
+    clamp_radius_km, get_candidates, haversine_km, list_places, with_colors,
 )
 from engines import (
     EngineManager,
@@ -336,6 +336,41 @@ def _places_unavailable_response(exc: PlacesUnavailable, radius_km: float):
     }), 503
 
 
+def _location_required_response():
+    return jsonify({
+        "status": "error", "code": "LOCATION_REQUIRED",
+        "message": "Turn on location so your third wheel can find real places nearby.",
+    }), 400
+
+
+# A little looser than the server's own radius filter - candidates_in is the
+# FRONTEND's memory of an earlier real fetch, not a fresh Overpass answer, so
+# small GPS drift between rounds of the same session shouldn't force a
+# wasted refetch.
+_CANDIDATES_IN_DISTANCE_SLACK_KM = 1.0
+
+
+def _candidates_in_still_valid(candidates_in: list[dict], source_in, location, radius_km: float) -> bool:
+    """False means the round-1 response's echoed `candidates` can't be
+    trusted for this round and must be refetched fresh. This is what stops a
+    demo/mock list (or a list fetched before location came online, or one
+    that's simply drifted out of the current radius) from silently riding
+    along into a later mediator round or a spin - the exact bug that showed
+    NYC restaurants after the location chip already said "Near you"."""
+    if source_in == "mock":
+        return False
+    if not location or location.get("lat") is None or location.get("lng") is None:
+        return False
+    lat, lng = location["lat"], location["lng"]
+    for c in candidates_in:
+        c_lat, c_lng = c.get("lat"), c.get("lng")
+        if c_lat is None or c_lng is None:
+            continue
+        if haversine_km(lat, lng, c_lat, c_lng) > radius_km + _CANDIDATES_IN_DISTANCE_SLACK_KM:
+            return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # State construction (shared by every engine)
 # ---------------------------------------------------------------------------
@@ -592,6 +627,8 @@ def places_route():
         places, source = list_places(location, radius_km=radius_km, cuisine=cuisine, diet=diet)
     except PlacesUnavailable as exc:
         return _places_unavailable_response(exc, radius_km)
+    except LocationRequired:
+        return _location_required_response()
     return jsonify({"places": places, "source": source, "radius_km": radius_km})
 
 
@@ -621,6 +658,9 @@ def decide():
 
     t0 = time.time()
 
+    if candidates_in and not _candidates_in_still_valid(candidates_in, source_in, location, radius_km):
+        candidates_in = None  # stale/mock/out-of-radius - fall through to a fresh fetch below
+
     if candidates_in:
         cands, source = candidates_in, source_in or "osm"
     else:
@@ -628,6 +668,8 @@ def decide():
             cands, source = get_candidates(location, radius_km=radius_km)
         except PlacesUnavailable as exc:
             return _places_unavailable_response(exc, radius_km)
+        except LocationRequired:
+            return _location_required_response()
     cands = with_colors(cands)
 
     combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])

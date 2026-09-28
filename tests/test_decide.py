@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import app as app_module  # noqa: E402
-from candidates import PlacesUnavailable  # noqa: E402
+from candidates import LocationRequired, PlacesUnavailable  # noqa: E402
 from engines import EngineManager  # noqa: E402
 from fakes import FakeEngine  # noqa: E402
 
@@ -196,6 +196,63 @@ def test_decide_returns_no_places_nearby_when_radius_is_empty(client, fake_manag
     data = resp.get_json()
     assert data["status"] == "error"
     assert data["code"] == "NO_PLACES_NEARBY"
+
+
+def test_decide_requires_location_with_no_candidates_in(client, fake_manager):
+    # No location and nothing usable echoed back from a previous round -
+    # there is no demo/mock fallback any more, this is a hard stop.
+    with patch("app.get_candidates", side_effect=LocationRequired()):
+        resp = _post(client, partner1={"text": "x"}, partner2={"text": "y"})
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data["status"] == "error"
+    assert data["code"] == "LOCATION_REQUIRED"
+
+
+def test_decide_discards_mock_sourced_candidates_in_and_refetches(client, fake_manager):
+    # This is the exact bug a real user hit: a demo/mock candidate list from
+    # an earlier round (e.g. before location came online) must never ride
+    # along into a later round just because the client echoed it back.
+    fresh = [{**FIXED_CANDS[0], "id": "fresh"}]
+    with patch("app.get_candidates", return_value=(fresh, "osm")) as mock_get:
+        resp = _post(
+            client,
+            partner1={"text": "anything"}, partner2={"text": "anything"},
+            location={"lat": 1.0, "lng": 1.0},
+            candidates=FIXED_CANDS, source="mock",
+        )
+    mock_get.assert_called_once()
+    assert resp.get_json()["winner"]["id"] == "fresh"
+
+
+def test_decide_discards_candidates_in_that_drifted_outside_the_radius(client, fake_manager):
+    far = [{**FIXED_CANDS[0], "lat": 50.0, "lng": 50.0}]
+    fresh = [{**FIXED_CANDS[0], "id": "fresh"}]
+    with patch("app.get_candidates", return_value=(fresh, "osm")) as mock_get:
+        resp = _post(
+            client,
+            partner1={"text": "anything"}, partner2={"text": "anything"},
+            location={"lat": 1.0, "lng": 1.0}, radius_km=5,
+            candidates=far, source="osm",
+        )
+    mock_get.assert_called_once()
+    assert resp.get_json()["winner"]["id"] == "fresh"
+
+
+def test_decide_trusts_fresh_in_radius_candidates_in_without_refetching(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.8, "b": 0.1, "c": 0.1}
+    with patch("app.get_candidates") as mock_get:
+        resp = _post(
+            client,
+            partner1={"text": "anything"}, partner2={"text": "anything"},
+            location={"lat": 1.0, "lng": 1.0}, radius_km=5,
+            candidates=FIXED_CANDS, source="osm",
+        )
+    mock_get.assert_not_called()
+    data = resp.get_json()
+    assert data["status"] == "match"
+    assert data["winner"]["id"] == "a"
 
 
 def test_budget_guard_excludes_expensive_option(client, fake_manager):

@@ -5,20 +5,21 @@ import { MapPin, Settings, X } from "lucide-react";
 import type { LocationStatus } from "@/lib/location/location-provider";
 
 /** Shown when "Find Our Table" is tapped with location off - a deliberate
- * moment to ask, not an unprompted browser permission dialog. Follows the
- * same vaul drawer pattern as components/install-prompt.tsx. */
+ * moment to ask, not an unprompted browser permission dialog. There is no
+ * demo-places fallback any more: enabling location is the only way through,
+ * since the backend now refuses a request with no real location outright
+ * (see LocationRequired in candidates.py). Follows the same vaul drawer
+ * pattern as components/install-prompt.tsx. */
 export function LocationPrompt({
   open,
   status,
   onOpenChange,
   onEnable,
-  onUseDemoPlaces,
 }: {
   open: boolean;
   status: LocationStatus;
   onOpenChange: (open: boolean) => void;
   onEnable: () => void;
-  onUseDemoPlaces: () => void;
 }) {
   const isBlocked = status === "blocked";
 
@@ -39,26 +40,19 @@ export function LocationPrompt({
             </div>
 
             {isBlocked ? (
-              <>
-                <p className="flex items-start gap-2 text-sm text-cream/80">
-                  <Settings className="mt-0.5 h-4 w-4 shrink-0" />
-                  Your browser has blocked location for this site. Open its site
-                  settings and allow location, then try again.
-                </p>
-                <button
-                  type="button"
-                  onClick={onUseDemoPlaces}
-                  className="w-full rounded-xl bg-ember py-3 text-sm font-medium text-ink"
-                >
-                  Use demo places for now
-                </button>
-              </>
+              <p className="flex items-start gap-2 text-sm text-cream/80">
+                <Settings className="mt-0.5 h-4 w-4 shrink-0" />
+                Your browser has blocked location for this site. Open its site
+                settings and allow location, then try again - your third
+                wheel needs to know where you are to find anywhere real.
+              </p>
             ) : (
               <>
                 <p className="flex items-start gap-2 text-sm text-cream/80">
                   <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
-                  Real nearby places, not the demo set. Your position stays on
-                  this device and is only sent with your requests.
+                  Your third wheel needs to know where you are to find real
+                  places nearby. Your position stays on this device and is
+                  only sent with your requests.
                 </p>
                 <button
                   type="button"
@@ -66,13 +60,6 @@ export function LocationPrompt({
                   className="w-full rounded-xl bg-ember py-3 text-sm font-medium text-ink"
                 >
                   Enable location
-                </button>
-                <button
-                  type="button"
-                  onClick={onUseDemoPlaces}
-                  className="w-full text-sm text-cream/60 underline underline-offset-4"
-                >
-                  Use demo places instead
                 </button>
               </>
             )}

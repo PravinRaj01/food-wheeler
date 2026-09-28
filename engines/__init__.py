@@ -14,6 +14,19 @@ try:
 except ImportError:  # pragma: no cover - psutil is a hard requirement in prod
     psutil = None
 
+try:
+    import torch
+    # Cloud Run runs this on 2 vCPUs (see the Dockerfile's OMP_NUM_THREADS,
+    # set for the same reason). torch defaults to one thread per *logical*
+    # core it sees, which on a bigger dev machine or a mis-reported
+    # container can wildly oversubscribe the real CPU budget and slow every
+    # engine call down rather than speed it up - pinning it here makes the
+    # thread count match what's actually available regardless of what torch
+    # detects.
+    torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "2")))
+except ImportError:  # pragma: no cover - torch is a hard requirement in prod
+    pass
+
 from .base import DecisionEngine, EngineResult, EngineScoreError
 from .clm_engine import ClmEngine
 from .gliner_engine import GlinerEngine

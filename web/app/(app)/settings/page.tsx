@@ -88,7 +88,7 @@ export default function SettingsPage() {
                 ? "Blocked in your browser — allow location for this site to use it."
                 : loc.status === "locating"
                   ? "Finding your position…"
-                  : "Off — showing demo places nearby."}
+                  : "Off — turn on to find real places nearby."}
           </p>
         </div>
         <Switch.Root

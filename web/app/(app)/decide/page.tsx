@@ -6,8 +6,8 @@ import { AnimatePresence } from "motion/react";
 import { MapPin } from "lucide-react";
 import { decideReducer, initialState } from "@/lib/decide/machine";
 import type { SessionSnapshot } from "@/lib/decide/machine";
-import { decide, listEngines, warmEngine } from "@/lib/api";
-import type { Candidate, DecideRequest, EngineId, EngineListItem } from "@/lib/decide/types";
+import { decide, listEngines, listPlaces, warmEngine } from "@/lib/api";
+import type { Candidate, DecideRequest, EngineId, EngineListItem, Location } from "@/lib/decide/types";
 import { useLocation } from "@/lib/location/location-provider";
 import { useOnline } from "@/lib/hooks/use-online";
 import { useToast } from "@/lib/hooks/use-toast";
@@ -216,6 +216,20 @@ export default function DecidePage() {
     if (state.phase === "reveal") session.set(SESSION_KEY, "");
   }, [state.phase]);
 
+  // Warm the backend's Overpass cache while the couple is still typing, so
+  // by the time they tap "Find Our Table" the real fetch (the slow part -
+  // up to 25s uncached at a big radius) is usually already done. Debounced
+  // so dragging the radius slider doesn't fire a request per pixel; result
+  // is ignored entirely, this is purely a cache-warming side effect.
+  useEffect(() => {
+    if (loc.status !== "granted" || !loc.location) return;
+    if (state.phase !== "p1" && state.phase !== "p2") return;
+    const handle = setTimeout(() => {
+      listPlaces(loc.location, state.radiusKm).catch(() => {});
+    }, 800);
+    return () => clearTimeout(handle);
+  }, [loc.status, loc.location, state.radiusKm, state.phase]);
+
   useEffect(() => {
     listEngines()
       .then((list) => {
@@ -253,7 +267,7 @@ export default function DecidePage() {
   const submittingRef = useRef(false);
 
   const submit = useCallback(
-    async (overrides?: { tiebreakers?: typeof state.tiebreakers; round?: number }) => {
+    async (overrides?: { tiebreakers?: typeof state.tiebreakers; round?: number; location?: Location | null }) => {
       if (submittingRef.current) return;
       submittingRef.current = true;
       dispatch({ type: "SUBMIT_START" });
@@ -262,7 +276,10 @@ export default function DecidePage() {
         dev_mode: state.devMode,
         partner1: { text: state.p1Text.trim(), input_mode: state.p1Mode },
         partner2: { text: state.p2Text.trim(), input_mode: state.p2Mode },
-        location: loc.location,
+        // overrides.location wins when given (a just-resolved fix from
+        // findTable()/the drawer - see their comments for why loc.location
+        // itself can't be trusted at the moment those call this).
+        location: overrides && "location" in overrides ? (overrides.location ?? null) : loc.location,
         candidates: state.candidates,
         source: state.source,
         tiebreakers: overrides?.tiebreakers ?? state.tiebreakers,
@@ -293,16 +310,29 @@ export default function DecidePage() {
     [state.engine, state.devMode, state.p1Text, state.p1Mode, state.p2Text, state.p2Mode, loc.location, state.candidates, state.source, state.tiebreakers, state.round, state.radiusKm],
   );
 
-  // "Find Our Table" goes through here first: a real location is worth a
-  // deliberate ask (the drawer), not a silent demo-mode fallback the couple
-  // never finds out about. Already granted (or already declined this round
-  // via the drawer) skips straight to submit().
-  const findTable = () => {
-    if (loc.enabled && (loc.status === "granted" || loc.status === "locating")) {
-      submit();
+  // "Find Our Table" goes through here first: a real location is required,
+  // not optional - there's no demo fallback to fall through to. If location
+  // was already enabled on a previous visit, this fetches (or reuses) a fix
+  // via ensureLocation() and submits with THAT value directly - never
+  // loc.location from this closure, which can still be null the instant
+  // after a fix resolves (the exact stale-closure bug that sent
+  // location: null right after tapping "Enable location" in the drawer).
+  // Only a first-ever ask (never enabled before) opens the drawer.
+  const findTable = async () => {
+    if (!loc.enabled) {
+      setLocationPromptOpen(true);
       return;
     }
-    setLocationPromptOpen(true);
+    if (loc.status === "blocked") {
+      setLocationPromptOpen(true);
+      return;
+    }
+    const fresh = await loc.ensureLocation();
+    if (fresh) {
+      submit({ location: fresh });
+    } else {
+      toast("Couldn't get your location - check your browser's permission for this site and try again.");
+    }
   };
 
   const resetGame = () => dispatch({ type: "RESET" });
@@ -325,7 +355,7 @@ export default function DecidePage() {
           className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-glass px-3 py-1.5 text-xs text-cream/60"
         >
           <MapPin className="h-3.5 w-3.5" />
-          {loc.status === "granted" ? "Near you" : loc.status === "locating" ? "Locating…" : "Demo places"}
+          {loc.status === "granted" ? "Near you" : loc.status === "locating" ? "Locating…" : "Location off"}
         </Link>
 
         {(state.phase === "p1" || state.phase === "p2") && (
@@ -454,13 +484,15 @@ export default function DecidePage() {
         status={loc.status}
         onOpenChange={setLocationPromptOpen}
         onEnable={async () => {
+          const fresh = await loc.enable();
           setLocationPromptOpen(false);
-          await loc.enable();
-          submit();
-        }}
-        onUseDemoPlaces={() => {
-          setLocationPromptOpen(false);
-          submit();
+          if (fresh) {
+            submit({ location: fresh });
+          } else {
+            // No demo fallback to fall through to - say so plainly rather
+            // than silently doing nothing.
+            toast("Couldn't get your location - check your browser's permission for this site and try again.");
+          }
         }}
       />
     </div>
