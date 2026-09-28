@@ -37,7 +37,7 @@ const tiebreakerResponse = (overrides: Partial<TiebreakerResponse> = {}): Tiebre
   confidence: 0.3,
   round: 0,
   rounds_left: 1,
-  question: { id: "q1", prompt: "?", options: [{ answer: "a", label: "A", emoji: "🍜", text: "a" }] },
+  question: { id: "q1", prompt: "?", options: [{ answer: "a", label: "A", text: "a" }] },
   contenders: [],
   candidates: [],
   source: "osm",

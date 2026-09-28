@@ -165,38 +165,40 @@ except (UnknownEngineError, EngineUnavailableError) as exc:
 # ---------------------------------------------------------------------------
 DIMENSION_ORDER = ["service", "spice", "setting", "price", "diet", "cuisine"]
 
+# No emoji in any of these - the frontend maps each (dimension id, answer)
+# pair to its own lucide icon instead (see mediator-panel.tsx's ICONS map).
 DIMENSION_VALUES = {
     "service": {
-        "fast_food": {"label": "Fast Food", "emoji": "🌮", "text": "Quick casual counter service"},
-        "sit_down": {"label": "Sit-down Dining", "emoji": "🍽️", "text": "Sit-down table service"},
+        "fast_food": {"label": "Fast Food", "text": "Quick casual counter service"},
+        "sit_down": {"label": "Sit-down Dining", "text": "Sit-down table service"},
     },
     "spice": {
-        "hot": {"label": "Spicy", "emoji": "🌶️", "text": "Bring the heat"},
-        "mild": {"label": "Mild", "emoji": "🥛", "text": "Keep it mild"},
+        "hot": {"label": "Spicy", "text": "Bring the heat"},
+        "mild": {"label": "Mild", "text": "Keep it mild"},
     },
     "setting": {
-        "patio": {"label": "Patio", "emoji": "🌳", "text": "Outdoor patio seating"},
-        "indoor": {"label": "Cozy Indoors", "emoji": "🏠", "text": "Indoor seating"},
+        "patio": {"label": "Patio", "text": "Outdoor patio seating"},
+        "indoor": {"label": "Cozy Indoors", "text": "Indoor seating"},
     },
     "price": {
-        "low": {"label": "Cheap Eats", "emoji": "💸", "text": "Keep it budget-friendly"},
-        "mid": {"label": "Mid-range", "emoji": "💵", "text": "Mid-range price is fine"},
-        "high": {"label": "Treat Ourselves", "emoji": "💎", "text": "Let's splurge a little"},
+        "low": {"label": "Cheap Eats", "text": "Keep it budget-friendly"},
+        "mid": {"label": "Mid-range", "text": "Mid-range price is fine"},
+        "high": {"label": "Treat Ourselves", "text": "Let's splurge a little"},
     },
     "diet": {
-        "vegan": {"label": "Vegan-friendly", "emoji": "🌱", "text": "Needs to be vegan-friendly"},
-        "vegetarian": {"label": "Vegetarian", "emoji": "🥗", "text": "Needs to be vegetarian"},
-        "halal": {"label": "Halal", "emoji": "🥙", "text": "Needs to be halal"},
-        "gluten_free": {"label": "Gluten-free", "emoji": "🌾", "text": "Needs to be gluten-free"},
-        "none": {"label": "No restrictions", "emoji": "🍖", "text": "No dietary restrictions"},
+        "vegan": {"label": "Vegan-friendly", "text": "Needs to be vegan-friendly"},
+        "vegetarian": {"label": "Vegetarian", "text": "Needs to be vegetarian"},
+        "halal": {"label": "Halal", "text": "Needs to be halal"},
+        "gluten_free": {"label": "Gluten-free", "text": "Needs to be gluten-free"},
+        "none": {"label": "No restrictions", "text": "No dietary restrictions"},
     },
 }
 
-MEDIATOR_PROMPT = "Vibes are conflicting! Decide together:"
+MEDIATOR_PROMPT = "Okay, I'm stepping in. One question, answer together:"
 
 
 def _cuisine_option(cuisine: str) -> dict:
-    return {"label": cuisine, "emoji": "🍴", "text": f"{cuisine} food"}
+    return {"label": cuisine, "text": f"{cuisine} food"}
 
 
 def build_mediator_question(top1: dict, top2: dict, asked_ids: set[str]) -> dict | None:

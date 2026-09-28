@@ -7,7 +7,7 @@ import { MapPin } from "lucide-react";
 import { decideReducer, initialState } from "@/lib/decide/machine";
 import type { SessionSnapshot } from "@/lib/decide/machine";
 import { decide, listEngines, listPlaces, warmEngine } from "@/lib/api";
-import type { Candidate, DecideRequest, EngineId, EngineListItem, Location } from "@/lib/decide/types";
+import type { Candidate, DecideRequest, EngineId, Location } from "@/lib/decide/types";
 import { useLocation } from "@/lib/location/location-provider";
 import { useOnline } from "@/lib/hooks/use-online";
 import { useToast } from "@/lib/hooks/use-toast";
@@ -17,7 +17,6 @@ import { getCurrentUserId } from "@/lib/actions/user";
 import { enqueueDecision } from "@/lib/sync/outbox";
 import { ToastStack } from "@/components/toast-stack";
 import { PartnerCard } from "@/components/decide/partner-card";
-import { EngineToggle } from "@/components/decide/engine-toggle";
 import { RadiusSlider } from "@/components/decide/radius-slider";
 import { HandoffScreen } from "@/components/decide/handoff-screen";
 import { NamesStep } from "@/components/decide/names-step";
@@ -50,7 +49,6 @@ const CHIP_GROUPS = [
 
 export default function DecidePage() {
   const [state, dispatch] = useReducer(decideReducer, undefined, () => initialState("laya", false));
-  const [engines, setEngines] = useState<EngineListItem[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
   const [locationPromptOpen, setLocationPromptOpen] = useState(false);
   // Holds a resolved server response back from the reducer until the
@@ -237,10 +235,13 @@ export default function DecidePage() {
     return () => clearTimeout(handle);
   }, [loc.status, loc.location, state.radiusKm, state.phase]);
 
+  // The engine picker itself now lives in Settings, under "Under the hood"
+  // - this just keeps whatever's stored in fw_engine actually usable:
+  // falling back if it's since become unavailable, and warming it so the
+  // first real submit isn't also paying a cold-load cost.
   useEffect(() => {
     listEngines()
       .then((list) => {
-        setEngines(list);
         const current = list.find((e) => e.id === state.engine);
         if (!current?.available) {
           const fallback = list.find((e) => e.default)?.id ?? list[0]?.id;
@@ -248,25 +249,10 @@ export default function DecidePage() {
         }
         warmEngine(state.engine).catch(() => {});
       })
-      .catch(() => setEngines([{ id: "laya", label: "Laya", available: true, loaded: false, default: true }]));
+      .catch(() => {});
     // Only on mount - engine availability is refreshed here, not polled.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const selectEngine = (id: EngineId) => {
-    if (state.engineLocked) return;
-    const entry = engines.find((e) => e.id === id);
-    if (!entry?.available) {
-      toast(entry?.reason ?? "That engine is unavailable.");
-      return;
-    }
-    dispatch({ type: "SET_ENGINE", engine: id });
-    local.set("fw_engine", id);
-    if (!entry.loaded) {
-      toast(`Warming up ${entry.label}…`);
-      warmEngine(id).catch(() => {});
-    }
-  };
 
   // A fast double-tap on "Find Our Table" could otherwise fire two requests
   // before the re-render that hides the button lands - this closes that gap
@@ -368,10 +354,7 @@ export default function DecidePage() {
       <ToastStack toasts={toasts} />
 
       <header className="mb-6">
-        {engines.length > 0 && (
-          <EngineToggle engines={engines} selected={state.engine} locked={state.engineLocked} onSelect={selectEngine} />
-        )}
-        <div className="mt-4 flex items-center justify-between">
+        <div className="flex items-center justify-between">
           <h1 className="font-display text-lg font-semibold tracking-tight">
             Food Wheeler{state.devMode && <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] tracking-wide text-cream/50 uppercase">Dev</span>}
           </h1>
@@ -456,7 +439,12 @@ export default function DecidePage() {
         )}
 
         {state.phase === "handoff" && (
-          <HandoffScreen key="handoff" p2Name={state.p2Name} onReady={() => dispatch({ type: "HANDOFF_DONE" })} />
+          <HandoffScreen
+            key="handoff"
+            p1Name={state.p1Name}
+            p2Name={state.p2Name}
+            onReady={() => dispatch({ type: "HANDOFF_DONE" })}
+          />
         )}
 
         {state.phase === "submitting" && (

@@ -5,6 +5,7 @@ import { motion } from "motion/react";
 import { Navigation, RotateCcw } from "lucide-react";
 import type { Location, MatchResponse } from "@/lib/decide/types";
 import { DevComparison } from "@/components/decide/dev-comparison";
+import { REVEAL_KICKER } from "@/lib/copy";
 
 const RevealMap = dynamic(() => import("@/components/decide/reveal-map").then((m) => m.RevealMap), {
   ssr: false,
@@ -52,7 +53,7 @@ export function RevealPanel({
       className="glass rounded-2xl p-6"
     >
       <div className="mb-2 flex items-center gap-2">
-        <p className="text-[11px] tracking-[0.15em] text-cream/40 uppercase">Tonight&apos;s table</p>
+        <p className="text-[11px] tracking-[0.15em] text-cream/40 uppercase">{REVEAL_KICKER}</p>
       </div>
       <div className="mb-1 flex items-start justify-between gap-3">
         <h2 className="font-display text-2xl leading-tight text-cream">{w.name}</h2>

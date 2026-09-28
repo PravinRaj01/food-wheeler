@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { MapPin, Soup, MessageSquareText, Scale, Sparkles } from "lucide-react";
 import type { MatchResponse, RankingRow, TiebreakerResponse } from "@/lib/decide/types";
+import { decidingIntro } from "@/lib/copy";
 
 /** What decide/page.tsx's submit() hands this component once the server has
  * actually answered - held back from the reducer (see its pendingResult
@@ -189,8 +190,7 @@ export function DecidingSequence({
         transition={{ duration: 0.4 }}
         className="glass w-full max-w-[280px] rounded-xl px-4 py-2 text-xs text-cream/70"
       >
-        <span className="font-medium text-cream">{p1Name || "Partner One"}</span> wants {p1Snippet || "—"} ·{" "}
-        <span className="font-medium text-cream">{p2Name || "Partner Two"}</span> wants {p2Snippet || "—"}
+        {decidingIntro(p1Name, p2Name, p1Snippet, p2Snippet)}
       </motion.div>
 
       {/* Connector diagram: branch paths fade in immediately, converge

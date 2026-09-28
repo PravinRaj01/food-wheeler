@@ -1,8 +1,42 @@
 "use client";
 
 import { motion } from "motion/react";
+import {
+  BadgeCheck,
+  Coins,
+  Flame,
+  Gem,
+  Home,
+  Milk,
+  Salad,
+  Sprout,
+  Trees,
+  UtensilsCrossed,
+  Utensils,
+  Wallet,
+  Wheat,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
 import type { RankingRow, TiebreakerResponse } from "@/lib/decide/types";
 import { DevComparison } from "@/components/decide/dev-comparison";
+
+// No emoji from the backend any more (see app.py's DIMENSION_VALUES) - each
+// (dimension id, answer) pair maps to its own lucide icon here instead. A
+// cuisine question's `answer` is an arbitrary string ("Thai", "Mexican", …)
+// decided at request time, so it falls through to the generic fork-and-
+// knife icon rather than getting its own entry.
+const OPTION_ICONS: Record<string, Record<string, LucideIcon>> = {
+  service: { fast_food: Zap, sit_down: UtensilsCrossed },
+  spice: { hot: Flame, mild: Milk },
+  setting: { patio: Trees, indoor: Home },
+  price: { low: Coins, mid: Wallet, high: Gem },
+  diet: { vegan: Sprout, vegetarian: Salad, halal: BadgeCheck, gluten_free: Wheat, none: Utensils },
+};
+
+function optionIcon(dimensionId: string, answer: string): LucideIcon {
+  return OPTION_ICONS[dimensionId]?.[answer] ?? Utensils;
+}
 
 export function MediatorPanel({
   response,
@@ -26,8 +60,7 @@ export function MediatorPanel({
     >
       <p className="mb-2 text-[11px] tracking-wide text-cream/40">via {response.engine.label}</p>
       <div role="status" aria-live="polite">
-        <h2 className="font-display text-xl text-cream">Let&apos;s settle this</h2>
-        <p className="mb-5 text-sm text-cream/60">{response.question.prompt}</p>
+        <h2 className="font-display mb-5 text-xl text-cream">{response.question.prompt}</h2>
       </div>
 
       <div className="mb-6 space-y-3 text-left">
@@ -39,16 +72,20 @@ export function MediatorPanel({
       {devMode && response.comparison && <DevComparison comparison={response.comparison} />}
 
       <div className="grid grid-cols-2 gap-3">
-        {response.question.options.map((opt) => (
-          <button
-            key={opt.answer}
-            type="button"
-            onClick={() => onAnswer({ question_id: response.question.id, answer: opt.answer, text: opt.text })}
-            className="hairline-b flex h-20 items-center justify-center rounded-xl border border-line text-sm font-medium text-cream transition-colors hover:bg-glass"
-          >
-            {opt.label}
-          </button>
-        ))}
+        {response.question.options.map((opt) => {
+          const Icon = optionIcon(response.question.id, opt.answer);
+          return (
+            <button
+              key={opt.answer}
+              type="button"
+              onClick={() => onAnswer({ question_id: response.question.id, answer: opt.answer, text: opt.text })}
+              className="hairline-b flex h-20 flex-col items-center justify-center gap-1.5 rounded-xl border border-line text-sm font-medium text-cream transition-colors hover:bg-glass"
+            >
+              <Icon className="h-4 w-4 text-ember" />
+              {opt.label}
+            </button>
+          );
+        })}
       </div>
 
       <p className="mt-5 text-xs text-cream/40">

@@ -1,18 +1,17 @@
 import type { Metadata, Viewport } from "next";
-import { Bricolage_Grotesque, Inter } from "next/font/google";
+import { Fraunces, Inter } from "next/font/google";
 import "./globals.css";
 import { SwRegister } from "@/components/sw-register";
 import { SplashScreen } from "@/components/splash-screen";
 
-// Clash Display (the plan's original pick) is Fontshare-only and would need
-// self-hosted font files; Bricolage Grotesque is the closest Google-hosted
-// equivalent - same bold, slightly quirky display character, zero
-// self-hosting/CDN risk (this session already hit three "free CDN changed
-// its rules" surprises, so Next's built-in Google Fonts self-hosting wins).
-const displayFont = Bricolage_Grotesque({
+// An elegant serif for headlines (Fraunces), Inter for everything else -
+// the classiness pass's typography decision. Google-hosted, so this keeps
+// the same zero self-hosting/CDN-risk property Bricolage Grotesque had.
+const displayFont = Fraunces({
   variable: "--font-display",
   subsets: ["latin"],
-  weight: ["500", "600", "700", "800"],
+  weight: ["500", "600", "700"],
+  style: ["normal", "italic"],
 });
 const bodyFont = Inter({
   variable: "--font-sans",

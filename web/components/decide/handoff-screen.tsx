@@ -2,12 +2,21 @@
 
 import { motion } from "motion/react";
 import { Smartphone } from "lucide-react";
+import { handoffLine } from "@/lib/copy";
 
 /** A real handoff, not a timed auto-advance - Partner Two has to actually
  * tap "ready" before their own input phase starts, so this genuinely
  * covers Partner One's answer changing hands rather than just pausing for
  * a second. */
-export function HandoffScreen({ p2Name, onReady }: { p2Name: string; onReady: () => void }) {
+export function HandoffScreen({
+  p1Name,
+  p2Name,
+  onReady,
+}: {
+  p1Name: string;
+  p2Name: string;
+  onReady: () => void;
+}) {
   const label = p2Name || "Partner Two";
 
   return (
@@ -18,8 +27,7 @@ export function HandoffScreen({ p2Name, onReady }: { p2Name: string; onReady: ()
       className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-[var(--orange-3)] p-6 text-center"
     >
       <Smartphone className="h-10 w-10 text-cream/70" />
-      <p className="font-display text-xl text-cream">Pass it to {label}</p>
-      <p className="text-sm text-cream/50">No peeking at what was just typed.</p>
+      <p className="font-display text-xl text-cream">{handoffLine(p1Name, p2Name)}</p>
       <button
         type="button"
         onClick={onReady}

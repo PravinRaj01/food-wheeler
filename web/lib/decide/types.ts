@@ -75,7 +75,9 @@ export interface Tiebreaker {
 export interface MediatorQuestion {
   id: string;
   prompt: string;
-  options: { answer: string; label: string; emoji: string; text: string }[];
+  // No emoji from the backend - the frontend maps (id, answer) to its own
+  // lucide icon instead (see mediator-panel.tsx).
+  options: { answer: string; label: string; text: string }[];
 }
 
 export interface Location {
