@@ -105,6 +105,39 @@ def test_only_one_candidate_survives_skips_scoring_entirely(client, fake_manager
     assert data["winner"]["id"] == "a"
 
 
+def test_only_option_still_includes_dev_mode_comparison(client, fake_manager):
+    # This is the bug this test guards against: the only_option branch used
+    # to return early without ever checking dev_mode, so the comparison
+    # panel silently never appeared even with Dev Mode on.
+    _, engine_a, engine_b = fake_manager
+    # A real engine scoring a single candidate trivially returns 100% for it
+    # (nothing else to rank against) - FakeEngine defaults to {} instead, so
+    # this has to be set explicitly for the comparison call to have anything
+    # to work with.
+    engine_a._probabilities = {"a": 1.0}
+    engine_b._probabilities = {"a": 1.0}
+    with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "mock")):
+        resp = _post(client, partner1={"text": "anything"}, partner2={"text": "anything"}, dev_mode=True)
+    data = resp.get_json()
+    assert data["reason"] == "only_option"
+    assert "comparison" in data
+    assert "engine_a" in data["comparison"]
+    assert "engine_b" in data["comparison"]
+
+
+def test_only_option_dev_mode_survives_an_empty_primary_score(client, fake_manager):
+    # FakeEngine's default {} probabilities stands in for a real engine
+    # degenerate-scoring a single candidate - the only_option response must
+    # still succeed (just without a comparison), matching the "Dev Mode can
+    # never break the main response" rule the rest of this file follows.
+    with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "mock")):
+        resp = _post(client, partner1={"text": "anything"}, partner2={"text": "anything"}, dev_mode=True)
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data["reason"] == "only_option"
+    assert "comparison" not in data
+
+
 def test_low_confidence_triggers_tiebreaker(client, fake_manager):
     _, engine_a, _ = fake_manager
     engine_a._probabilities = {"a": 0.45, "b": 0.40, "c": 0.15}

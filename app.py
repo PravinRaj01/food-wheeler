@@ -578,6 +578,21 @@ def decide():
                         "raw_top": None, "fallback_from": None, "latency_ms": 0.0}
         payload = _match_payload(winner, [{**winner, "probability": 1.0}], "only_option", 1.0,
                                   source, cands, round_num, t0, engine_meta)
+        if dev_mode:
+            # Normally this path skips scoring entirely - the outcome is
+            # forced regardless of what any engine says. Dev Mode is the one
+            # exception: it explicitly asks "how would every engine have
+            # scored this", so it's worth the extra (still fast, one
+            # candidate) score call purely for that comparison payload.
+            state = build_state(p1, p2, tiebreakers)
+            try:
+                result = engine.score(state, filtered, exclusions)
+                if not result.probabilities:
+                    raise EngineScoreError("no probabilities returned")
+                payload["comparison"] = run_dev_mode_comparison(
+                    engine.id, result, state, filtered, exclusions, winner["id"])
+            except EngineScoreError:
+                pass  # comparison is best-effort - never break the only_option response over it
         return jsonify(payload)
 
     state = build_state(p1, p2, tiebreakers)
