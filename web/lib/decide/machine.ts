@@ -122,15 +122,23 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
       return { ...state, p1Text: action.text, p1Mode: action.mode ?? state.p1Mode };
     case "SET_P2_TEXT":
       return { ...state, p2Text: action.text, p2Mode: action.mode ?? state.p2Mode };
-    // Opening a card un-seals it - reopening a sealed card to edit it means
-    // re-sealing (or "Anything's fine") before it counts again. Either
-    // partner can open either card, in any order; a no-op once the engine
-    // is locked (already submitted this round).
+    // Opening a card un-seals it - reopening to edit means re-sealing (or
+    // "Anything's fine") before it counts again. Either partner can open
+    // either card, in any order; a no-op once the engine is locked
+    // (already submitted this round).
+    //
+    // If the card was SEALED, its text is cleared on the way back open -
+    // both partners share one phone, so a "sealed" card is the only privacy
+    // this app can offer, and reopening it must never redisplay what was
+    // typed (that's a real leak this app shipped with, not a hypothetical:
+    // tapping a sealed card just showed the answer). A card that was never
+    // sealed (still mid-draft, closed with x instead of Done) keeps its
+    // draft - nothing was ever "sealed away" for it to leak.
     case "OPEN_CARD":
       if (state.engineLocked) return state;
       return action.card === 1
-        ? { ...state, openCard: 1, p1Sealed: false }
-        : { ...state, openCard: 2, p2Sealed: false };
+        ? { ...state, openCard: 1, p1Sealed: false, ...(state.p1Sealed && { p1Text: "", p1Mode: "typed" as const }) }
+        : { ...state, openCard: 2, p2Sealed: false, ...(state.p2Sealed && { p2Text: "", p2Mode: "typed" as const }) };
     case "CLOSE_CARD":
       return { ...state, openCard: null };
     case "SEAL_CARD":

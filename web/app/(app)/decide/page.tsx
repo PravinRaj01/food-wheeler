@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { MapPin } from "lucide-react";
@@ -405,33 +406,41 @@ export default function DecidePage() {
 
         {state.phase === "input" && (
           <div key="input" className="space-y-4">
+            {/* Each slot is a permanently-present h-32 box, not a
+                collapsed-card-or-placeholder swap - the box itself must
+                never change size/position when the OTHER card opens, or
+                Motion's layout system can treat that as a real layout
+                change for this card too (it shares a LayoutGroup) and
+                briefly boost it above the backdrop/panel while resolving
+                it, which is exactly what looked like the other card
+                "leaking through" the overlay. */}
             <div className="grid grid-cols-2 gap-3">
-              {state.openCard === 1 ? (
-                <div className="h-32" />
-              ) : (
-                <PartnerCardCollapsed
-                  number={1}
-                  label={state.p1Name || "Partner One"}
-                  sealed={state.p1Sealed}
-                  hasText={Boolean(state.p1Text.trim())}
-                  disabled={state.engineLocked}
-                  accentVar="--p1"
-                  onOpen={() => dispatch({ type: "OPEN_CARD", card: 1 })}
-                />
-              )}
-              {state.openCard === 2 ? (
-                <div className="h-32" />
-              ) : (
-                <PartnerCardCollapsed
-                  number={2}
-                  label={state.p2Name || "Partner Two"}
-                  sealed={state.p2Sealed}
-                  hasText={Boolean(state.p2Text.trim())}
-                  disabled={state.engineLocked}
-                  accentVar="--p2"
-                  onOpen={() => dispatch({ type: "OPEN_CARD", card: 2 })}
-                />
-              )}
+              <div className="h-32">
+                {state.openCard !== 1 && (
+                  <PartnerCardCollapsed
+                    number={1}
+                    label={state.p1Name || "Partner One"}
+                    sealed={state.p1Sealed}
+                    hasText={Boolean(state.p1Text.trim())}
+                    disabled={state.engineLocked}
+                    accentVar="--p1"
+                    onOpen={() => dispatch({ type: "OPEN_CARD", card: 1 })}
+                  />
+                )}
+              </div>
+              <div className="h-32">
+                {state.openCard !== 2 && (
+                  <PartnerCardCollapsed
+                    number={2}
+                    label={state.p2Name || "Partner Two"}
+                    sealed={state.p2Sealed}
+                    hasText={Boolean(state.p2Text.trim())}
+                    disabled={state.engineLocked}
+                    accentVar="--p2"
+                    onOpen={() => dispatch({ type: "OPEN_CARD", card: 2 })}
+                  />
+                )}
+              </div>
             </div>
 
             {canSubmit(state) && (
@@ -508,54 +517,64 @@ export default function DecidePage() {
         )}
       </AnimatePresence>
 
-      {/* The morphed-open card panel, plus its backdrop - only ever mounted
-          during "input", separate from the AnimatePresence above so it can
-          overlay the whole phase (not just its own grid slot). Tapping the
-          backdrop closes without sealing. */}
-      <AnimatePresence>
-        {state.openCard != null && (
-          <motion.div
-            key="card-backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-40 bg-black/50"
-            onClick={() => dispatch({ type: "CLOSE_CARD" })}
-          />
+      {/* The morphed-open card panel, plus its backdrop - portaled straight
+          to <body>, not just `fixed` in place. `position: fixed` is only
+          fixed to the true viewport as long as NO ancestor sets a
+          transform/filter/backdrop-filter/will-change (any of those makes
+          it a new containing block instead) - Motion's own layout-animated
+          elements do exactly that, which is what let the other card show
+          through at near-full opacity instead of being dimmed underneath.
+          Every other overlay in this app (the location/install drawers)
+          gets this for free from vaul's own Portal; this one didn't have
+          one. Only ever mounted during "input". */}
+      {typeof document !== "undefined" &&
+        createPortal(
+          <AnimatePresence>
+            {state.openCard != null && (
+              <motion.div
+                key="card-backdrop"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-40 bg-black/70"
+                onClick={() => dispatch({ type: "CLOSE_CARD" })}
+              />
+            )}
+            {state.openCard === 1 && (
+              <PartnerCardPanel
+                key="panel-1"
+                number={1}
+                label={state.p1Name || "Partner One"}
+                text={state.p1Text}
+                onTextChange={(text, mode) => dispatch({ type: "SET_P1_TEXT", text, mode })}
+                placeholder="Spicy, under RM30, somewhere close…"
+                chipGroups={CHIP_GROUPS}
+                accentVar="--p1"
+                onDone={() => dispatch({ type: "SEAL_CARD", card: 1 })}
+                onNoPreference={() => dispatch({ type: "SEAL_NO_PREFERENCE", card: 1 })}
+                onClose={() => dispatch({ type: "CLOSE_CARD" })}
+                onSpeechError={toast}
+              />
+            )}
+            {state.openCard === 2 && (
+              <PartnerCardPanel
+                key="panel-2"
+                number={2}
+                label={state.p2Name || "Partner Two"}
+                text={state.p2Text}
+                onTextChange={(text, mode) => dispatch({ type: "SET_P2_TEXT", text, mode })}
+                placeholder="Casual, a patio if possible, no burgers…"
+                chipGroups={CHIP_GROUPS}
+                accentVar="--p2"
+                onDone={() => dispatch({ type: "SEAL_CARD", card: 2 })}
+                onNoPreference={() => dispatch({ type: "SEAL_NO_PREFERENCE", card: 2 })}
+                onClose={() => dispatch({ type: "CLOSE_CARD" })}
+                onSpeechError={toast}
+              />
+            )}
+          </AnimatePresence>,
+          document.body,
         )}
-        {state.openCard === 1 && (
-          <PartnerCardPanel
-            key="panel-1"
-            number={1}
-            label={state.p1Name || "Partner One"}
-            text={state.p1Text}
-            onTextChange={(text, mode) => dispatch({ type: "SET_P1_TEXT", text, mode })}
-            placeholder="Spicy, under RM30, somewhere close…"
-            chipGroups={CHIP_GROUPS}
-            accentVar="--p1"
-            onDone={() => dispatch({ type: "SEAL_CARD", card: 1 })}
-            onNoPreference={() => dispatch({ type: "SEAL_NO_PREFERENCE", card: 1 })}
-            onClose={() => dispatch({ type: "CLOSE_CARD" })}
-            onSpeechError={toast}
-          />
-        )}
-        {state.openCard === 2 && (
-          <PartnerCardPanel
-            key="panel-2"
-            number={2}
-            label={state.p2Name || "Partner Two"}
-            text={state.p2Text}
-            onTextChange={(text, mode) => dispatch({ type: "SET_P2_TEXT", text, mode })}
-            placeholder="Casual, a patio if possible, no burgers…"
-            chipGroups={CHIP_GROUPS}
-            accentVar="--p2"
-            onDone={() => dispatch({ type: "SEAL_CARD", card: 2 })}
-            onNoPreference={() => dispatch({ type: "SEAL_NO_PREFERENCE", card: 2 })}
-            onClose={() => dispatch({ type: "CLOSE_CARD" })}
-            onSpeechError={toast}
-          />
-        )}
-      </AnimatePresence>
 
       <LocationPrompt
         open={locationPromptOpen}

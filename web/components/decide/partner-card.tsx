@@ -128,7 +128,12 @@ export function PartnerCardPanel({
       initial={reduced ? { opacity: 0 } : false}
       animate={reduced ? { opacity: 1 } : undefined}
       exit={reduced ? { opacity: 0 } : undefined}
-      className="glass fixed inset-x-4 top-20 z-50 max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-2xl p-5 md:inset-x-auto md:left-1/2 md:w-full md:max-w-md md:-translate-x-1/2"
+      // A noticeably more solid background than the shared .glass (6% tint)
+      // - this is a modal-weight surface sitting over a now much-darker
+      // backdrop, not a card blending into the canvas, and it read as
+      // flimsy/see-through at glass's usual opacity.
+      className="fixed inset-x-4 top-20 z-50 max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-2xl border border-line p-5 shadow-2xl backdrop-blur-xl md:inset-x-auto md:left-1/2 md:w-full md:max-w-md md:-translate-x-1/2"
+      style={{ background: "color-mix(in oklab, var(--canvas-fg) 16%, var(--canvas))" }}
     >
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">

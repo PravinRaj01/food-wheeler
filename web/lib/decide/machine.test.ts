@@ -101,12 +101,20 @@ describe("decideReducer", () => {
     expect(s.p1Mode).toBe("voice");
   });
 
-  it("OPEN_CARD opens the given card and un-seals it", () => {
-    const sealed = { ...initialState("laya", false), p1Sealed: true, p1Text: "spicy" };
+  it("OPEN_CARD reopening a SEALED card clears its text - no peeking at what was typed", () => {
+    const sealed = { ...initialState("laya", false), p1Sealed: true, p1Text: "spicy", p1Mode: "voice" as const };
     const s = decideReducer(sealed, { type: "OPEN_CARD", card: 1 });
     expect(s.openCard).toBe(1);
     expect(s.p1Sealed).toBe(false);
-    // Reopening to edit doesn't clear the text itself, just the seal.
+    expect(s.p1Text).toBe("");
+    expect(s.p1Mode).toBe("typed");
+  });
+
+  it("OPEN_CARD on an UNSEALED card (a closed-but-not-sealed draft) keeps its text", () => {
+    // Closed via x instead of Done - never sealed, so there was nothing
+    // "hidden" to protect; reopening should restore the draft as-is.
+    const draft = { ...initialState("laya", false), p1Sealed: false, p1Text: "spicy" };
+    const s = decideReducer(draft, { type: "OPEN_CARD", card: 1 });
     expect(s.p1Text).toBe("spicy");
   });
 
