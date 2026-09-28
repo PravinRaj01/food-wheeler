@@ -8,7 +8,7 @@ import { decide, listEngines, warmEngine } from "@/lib/api";
 import type { Candidate, DecideRequest, EngineId, EngineListItem } from "@/lib/decide/types";
 import { useGeolocation } from "@/lib/hooks/use-geolocation";
 import { useToast } from "@/lib/hooks/use-toast";
-import { useDevModeTrigger } from "@/lib/hooks/use-dev-mode-trigger";
+import { isDevModeEnabled } from "@/lib/dev-mode";
 import { local, session } from "@/lib/safe-storage";
 import { getCurrentUserId } from "@/lib/actions/user";
 import { enqueueDecision } from "@/lib/sync/outbox";
@@ -33,9 +33,6 @@ export default function DecidePage() {
   const [userId, setUserId] = useState<string | null>(null);
   const geo = useGeolocation();
   const { toasts, toast } = useToast();
-  const devTrigger = useDevModeTrigger(() => {
-    dispatch({ type: "TOGGLE_DEV_MODE" });
-  });
 
   useEffect(() => {
     getCurrentUserId().then(setUserId).catch(() => setUserId(null));
@@ -77,7 +74,7 @@ export default function DecidePage() {
   useEffect(() => {
     const storedEngine = local.get("fw_engine", "laya") as EngineId;
     if (storedEngine !== "laya") dispatch({ type: "SET_ENGINE", engine: storedEngine });
-    if (session.get("fw_dev_mode", "0") === "1") dispatch({ type: "SET_DEV_MODE", value: true });
+    if (isDevModeEnabled()) dispatch({ type: "SET_DEV_MODE", value: true });
 
     // One-time handoff from Explore's "Add to tonight's wheel" - see
     // components/explore/place-card.tsx for the write side.
@@ -116,11 +113,6 @@ export default function DecidePage() {
     // Only on mount - engine availability is refreshed here, not polled.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    session.set("fw_dev_mode", state.devMode ? "1" : "0");
-    if (state.devMode) toast("Developer mode enabled");
-  }, [state.devMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectEngine = (id: EngineId) => {
     if (state.engineLocked) return;
@@ -180,10 +172,7 @@ export default function DecidePage() {
           <EngineToggle engines={engines} selected={state.engine} locked={state.engineLocked} onSelect={selectEngine} />
         )}
         <div className="mt-4 flex items-center justify-between">
-          <h1
-            className="font-display cursor-default text-lg font-semibold tracking-tight select-none"
-            onClick={devTrigger.onClick}
-          >
+          <h1 className="font-display text-lg font-semibold tracking-tight">
             Food Wheeler{state.devMode && <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] tracking-wide text-cream/50 uppercase">Dev</span>}
           </h1>
         </div>

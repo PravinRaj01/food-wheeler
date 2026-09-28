@@ -126,13 +126,6 @@ describe("decideReducer", () => {
     expect(s.source).toBe("mock");
   });
 
-  it("TOGGLE_DEV_MODE flips devMode", () => {
-    let s = decideReducer(initialState("laya", false), { type: "TOGGLE_DEV_MODE" });
-    expect(s.devMode).toBe(true);
-    s = decideReducer(s, { type: "TOGGLE_DEV_MODE" });
-    expect(s.devMode).toBe(false);
-  });
-
   it("SUBMIT_START moves to submitting, locks the engine, and clears any error", () => {
     const withError = { ...initialState("laya", false), errorMessage: "oops" };
     const s = decideReducer(withError, { type: "SUBMIT_START" });

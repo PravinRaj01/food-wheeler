@@ -32,7 +32,6 @@ export type Action =
   | { type: "SET_ENGINE"; engine: EngineId }
   | { type: "SET_RADIUS_KM"; km: number }
   | { type: "SEED_CANDIDATES"; candidates: Candidate[]; source: "osm" | "mock" }
-  | { type: "TOGGLE_DEV_MODE" }
   | { type: "SET_DEV_MODE"; value: boolean }
   | { type: "SUBMIT_START" }
   | { type: "SUBMIT_MATCH"; response: MatchResponse }
@@ -83,8 +82,6 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
       return state.engineLocked ? state : { ...state, radiusKm: action.km, candidates: null, source: null };
     case "SEED_CANDIDATES":
       return { ...state, candidates: action.candidates, source: action.source };
-    case "TOGGLE_DEV_MODE":
-      return { ...state, devMode: !state.devMode };
     case "SET_DEV_MODE":
       return { ...state, devMode: action.value };
     case "SUBMIT_START":
