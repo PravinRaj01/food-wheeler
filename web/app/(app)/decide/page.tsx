@@ -22,6 +22,7 @@ import { RadiusSlider } from "@/components/decide/radius-slider";
 import { HandoffScreen } from "@/components/decide/handoff-screen";
 import { NamesStep } from "@/components/decide/names-step";
 import { DecidingSequence } from "@/components/decide/deciding-sequence";
+import type { PendingDecideResult } from "@/components/decide/deciding-sequence";
 import { LocationPrompt } from "@/components/decide/location-prompt";
 import { Wheel, slicesFromRanking } from "@/components/decide/wheel";
 import { MediatorPanel } from "@/components/decide/mediator-panel";
@@ -52,6 +53,12 @@ export default function DecidePage() {
   const [engines, setEngines] = useState<EngineListItem[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
   const [locationPromptOpen, setLocationPromptOpen] = useState(false);
+  // Holds a resolved server response back from the reducer until the
+  // deciding animation has actually finished playing (see DecidingSequence
+  // and its onDone below) - so the wheel/mediator screen never appears a
+  // beat before the "considering options, then landing on one" animation
+  // has had its say, and a fast/cached round doesn't just flash past it.
+  const [pendingResult, setPendingResult] = useState<PendingDecideResult | null>(null);
   const loc = useLocation();
   const isOnline = useOnline();
   const { toasts, toast } = useToast();
@@ -288,13 +295,20 @@ export default function DecidePage() {
       };
       try {
         const res = await decide(body);
-        if (res.status === "match") dispatch({ type: "SUBMIT_MATCH", response: res });
-        else if (res.status === "tiebreaker") dispatch({ type: "SUBMIT_TIEBREAKER", response: res });
+        // A real result is handed to the deciding animation, not dispatched
+        // straight away - handleDecidingDone() below does the actual
+        // dispatch once it's finished playing. An error skips all of that
+        // and dispatches immediately, per the plan: nothing to animate
+        // toward when there's nothing to show.
+        if (res.status === "match") setPendingResult({ kind: "match", response: res });
+        else if (res.status === "tiebreaker") setPendingResult({ kind: "tiebreaker", response: res });
         else {
+          setPendingResult(null);
           toast(res.message || "Something went wrong.");
           dispatch({ type: "SUBMIT_ERROR", message: res.message });
         }
       } catch (err) {
+        setPendingResult(null);
         const timedOut = err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError");
         toast(
           timedOut
@@ -334,6 +348,18 @@ export default function DecidePage() {
       toast("Couldn't get your location - check your browser's permission for this site and try again.");
     }
   };
+
+  // Fires once the deciding animation has actually finished playing (see
+  // DecidingSequence's onDone) - this is where a resolved response finally
+  // becomes real reducer state.
+  const handleDecidingDone = useCallback(() => {
+    setPendingResult((current) => {
+      if (!current) return current;
+      if (current.kind === "match") dispatch({ type: "SUBMIT_MATCH", response: current.response });
+      else dispatch({ type: "SUBMIT_TIEBREAKER", response: current.response });
+      return null;
+    });
+  }, []);
 
   const resetGame = () => dispatch({ type: "RESET" });
 
@@ -433,7 +459,17 @@ export default function DecidePage() {
           <HandoffScreen key="handoff" p2Name={state.p2Name} onReady={() => dispatch({ type: "HANDOFF_DONE" })} />
         )}
 
-        {state.phase === "submitting" && <DecidingSequence key="submitting" />}
+        {state.phase === "submitting" && (
+          <DecidingSequence
+            key="submitting"
+            p1Name={state.p1Name}
+            p2Name={state.p2Name}
+            p1Text={state.p1Text}
+            p2Text={state.p2Text}
+            pendingResult={pendingResult}
+            onDone={handleDecidingDone}
+          />
+        )}
 
         {state.phase === "wheel" && state.lastMatch && (
           <div key="wheel" className="py-8">
