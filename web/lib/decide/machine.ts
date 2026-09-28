@@ -89,7 +89,10 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
     case "SUBMIT_MATCH":
       return {
         ...state,
-        phase: "wheel",
+        // A single surviving candidate (every other option got excluded by
+        // a guard) has nothing to spin for - go straight to reveal instead
+        // of animating a one-slice wheel.
+        phase: action.response.reason === "only_option" ? "reveal" : "wheel",
         lastMatch: action.response,
         candidates: action.response.candidates,
         source: action.response.source,

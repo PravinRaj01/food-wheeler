@@ -38,6 +38,18 @@ export default function DecidePage() {
     getCurrentUserId().then(setUserId).catch(() => setUserId(null));
   }, []);
 
+  // "denied" covers an explicit no, an unsupported browser, AND our own
+  // GEO_TIMEOUT_MS backstop (use-geolocation.ts) for a permission prompt
+  // the user never answered - all three look identical to the app, and all
+  // three mean the same thing: nudge them toward demo mode's real cause
+  // instead of leaving "Locating…" looking stuck with no explanation.
+  useEffect(() => {
+    if (geo.status === "denied") {
+      toast("Location is off, so we're showing demo places nearby. Turn on location access for your browser to see real ones.");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [geo.status]);
+
   // Save every reveal to the local-first outbox (see lib/sync/outbox.ts) -
   // guests get it too (ownerId: null), claimed automatically on their next
   // login. Guarded by clientId so a re-render on the reveal screen (e.g.
@@ -184,6 +196,11 @@ export default function DecidePage() {
           <MapPin className="h-3.5 w-3.5" />
           {geo.status === "locating" ? "Locating…" : geo.status === "granted" ? "Near you" : geo.status === "denied" ? "Demo location" : "Use my location"}
         </button>
+        {geo.status === "denied" && (
+          <p className="mt-1.5 text-[11px] text-cream/40">
+            Turn on location access in your browser or device settings, then tap this to try again.
+          </p>
+        )}
 
         {(state.phase === "p1" || state.phase === "p2") && (
           <div className="mt-4">

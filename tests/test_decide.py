@@ -91,6 +91,20 @@ def test_high_confidence_match(client, fake_manager):
     assert data["engine"]["id"] == "engine_a"
 
 
+def test_only_one_candidate_survives_skips_scoring_entirely(client, fake_manager):
+    # A single candidate (everyone else excluded by a guard, or just one
+    # nearby result) never reaches the engine at all - it's an automatic
+    # "only_option" match at 100% confidence. The frontend's reducer skips
+    # the wheel for exactly this reason (see lib/decide/machine.ts).
+    with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "mock")):
+        resp = _post(client, partner1={"text": "anything"}, partner2={"text": "anything"})
+    data = resp.get_json()
+    assert data["status"] == "match"
+    assert data["reason"] == "only_option"
+    assert data["confidence"] == 1.0
+    assert data["winner"]["id"] == "a"
+
+
 def test_low_confidence_triggers_tiebreaker(client, fake_manager):
     _, engine_a, _ = fake_manager
     engine_a._probabilities = {"a": 0.45, "b": 0.40, "c": 0.15}

@@ -143,6 +143,13 @@ describe("decideReducer", () => {
     expect(s.source).toBe("mock");
   });
 
+  it("SUBMIT_MATCH skips the wheel and goes straight to reveal when only one candidate survived", () => {
+    const response = matchResponse({ reason: "only_option", candidates: [candidate("a")], source: "mock" });
+    const s = decideReducer(initialState("laya", false), { type: "SUBMIT_MATCH", response });
+    expect(s.phase).toBe("reveal");
+    expect(s.lastMatch).toBe(response);
+  });
+
   it("SUBMIT_TIEBREAKER moves to mediator and stores the response, candidates and source", () => {
     const response = tiebreakerResponse({ candidates: [candidate("a")], source: "osm" });
     const s = decideReducer(initialState("laya", false), { type: "SUBMIT_TIEBREAKER", response });
