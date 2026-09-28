@@ -1,15 +1,8 @@
 "use client";
 
-import { Cpu, Target, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ENGINE_CAPTIONS, ENGINE_ICONS } from "@/lib/decide/engine-meta";
 import type { EngineId, EngineListItem } from "@/lib/decide/types";
-
-const ICONS: Record<EngineId, typeof Zap> = { laya: Zap, gliner: Target, clm_8b: Cpu };
-const CAPTIONS: Record<EngineId, string> = {
-  laya: "Fast, joint-attention model",
-  gliner: "CPU-first, handles exclusions well",
-  clm_8b: "Dual-encoder — needs a GPU server",
-};
 
 export function EngineToggle({
   engines,
@@ -28,7 +21,7 @@ export function EngineToggle({
     <div>
       <div className="glass flex gap-1 rounded-lg p-1">
         {engines.map((e) => {
-          const Icon = ICONS[e.id];
+          const Icon = ENGINE_ICONS[e.id];
           const active = e.id === selected;
           const disabled = !e.available || (locked && !active);
           return (
@@ -51,7 +44,7 @@ export function EngineToggle({
         })}
       </div>
       <p className="mt-2 text-center text-[11px] text-cream/50">
-        {locked ? "Locked for this round — start over to change engines" : CAPTIONS[selected]}
+        {locked ? "Locked for this round — start over to change engines" : ENGINE_CAPTIONS[selected]}
       </p>
     </div>
   );

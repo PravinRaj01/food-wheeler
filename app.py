@@ -12,10 +12,22 @@ engines/; everything below the engine.score() call is engine-agnostic.
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from functools import wraps
+
+# gliner2 prints a startup banner containing an emoji on model load. The
+# Dockerfile sets PYTHONUTF8=1 so production never hits this, but a plain
+# `python app.py` on Windows defaults its stdout to the system codepage
+# (cp1252), which can't encode it - that crashes the load with a bare
+# UnicodeEncodeError from deep inside a dependency, with no code of ours
+# anywhere in the traceback. Reconfiguring here is a no-op on platforms
+# where stdout is already UTF-8 (Linux/macOS, and Docker via PYTHONUTF8).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from flask import Flask, jsonify, request
 

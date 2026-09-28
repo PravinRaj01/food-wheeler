@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { motion } from "motion/react";
 import { Navigation, RotateCcw } from "lucide-react";
 import type { Location, MatchResponse } from "@/lib/decide/types";
+import { DevComparison } from "@/components/decide/dev-comparison";
 
 const RevealMap = dynamic(() => import("@/components/decide/reveal-map").then((m) => m.RevealMap), {
   ssr: false,
@@ -70,19 +71,7 @@ export function RevealPanel({
         </div>
       )}
 
-      {devMode && response.comparison && (
-        <div className="mb-4 space-y-0.5 rounded-lg bg-black/30 p-3 font-mono text-[10px] text-cream/60">
-          {Object.entries(response.comparison).map(([id, c]) => (
-            <div key={id}>
-              {c.error
-                ? `${id}: unavailable`
-                : `${id}: ${Math.round((c.top_p ?? 0) * 100)}% → ${c.top_name}${
-                    c.primary ? "" : c.agrees === false ? " (disagrees)" : ""
-                  } · ${c.latency_ms}ms`}
-            </div>
-          ))}
-        </div>
-      )}
+      {devMode && response.comparison && <DevComparison comparison={response.comparison} />}
 
       <div className="mb-4">
         <RevealMap winner={w} userLocation={userLocation} matchPercent={pct} />

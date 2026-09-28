@@ -4,12 +4,8 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { MapPin, Soup, MessageSquareText, Scale, Sparkles } from "lucide-react";
 
-// A small deck of "what it's doing" cards, cycling while the actual
-// /api/decide request is in flight. Purely decorative - there's no real
-// per-step progress to report (the request is one round trip), but cycling
-// through the stages an AI "System 1" decision actually goes through
-// (candidates -> cuisine -> both partners' text -> comparing -> ranking)
-// reads as "it's genuinely working through this" rather than a bare spinner.
+// The status line cycling below the diagram - purely decorative captioning,
+// same wording as before.
 const STEPS = [
   { icon: MapPin, text: "Scanning nearby spots…" },
   { icon: Soup, text: "Checking cuisines…" },
@@ -17,8 +13,40 @@ const STEPS = [
   { icon: Scale, text: "Comparing the options…" },
   { icon: Sparkles, text: "Almost ready…" },
 ];
+const STEP_MS = 1100;
 
-const STEP_MS = 850;
+// The diagram itself: one source node branches out to 3 candidate nodes,
+// which then converge into a single final node - "considering several
+// options, then landing on one" as a continuous, fully declarative loop
+// (framer-motion keyframe arrays + repeat: Infinity, no JS timer driving
+// it). Coordinates are in a 240x170 viewBox.
+const SOURCE = { x: 120, y: 16 };
+const BRANCHES = [
+  { x: 50, y: 85 },
+  { x: 120, y: 85 },
+  { x: 190, y: 85 },
+];
+const FINAL = { x: 120, y: 152 };
+
+const CYCLE_S = 2.6;
+// Fractions of one cycle, shared by every element's keyframe `times` array
+// so the whole diagram stays in lockstep.
+const T = {
+  branchOutStart: 0,
+  branchOutEnd: 0.28,
+  hold: 0.4,
+  convergeStart: 0.42,
+  convergeEnd: 0.68,
+  settle: 0.8,
+  fadeStart: 0.92,
+};
+
+function outPath(to: { x: number; y: number }) {
+  return `M ${SOURCE.x} ${SOURCE.y} Q ${(SOURCE.x + to.x) / 2} ${(SOURCE.y + to.y) / 2 - 10} ${to.x} ${to.y}`;
+}
+function inPath(from: { x: number; y: number }) {
+  return `M ${from.x} ${from.y} Q ${(from.x + FINAL.x) / 2} ${(from.y + FINAL.y) / 2 + 10} ${FINAL.x} ${FINAL.y}`;
+}
 
 export function DecidingSequence() {
   const [index, setIndex] = useState(0);
@@ -32,42 +60,117 @@ export function DecidingSequence() {
   const Icon = step.icon;
 
   return (
-    <div className="flex flex-col items-center gap-5 py-20 text-center">
-      <div className="relative h-28 w-64">
-        {/* A soft pulsing glow behind the card stack - just enough motion to
-            read as "working" even in the instant between card swaps. */}
-        <motion.div
-          aria-hidden
-          animate={{ scale: [1, 1.15, 1], opacity: [0.25, 0.4, 0.25] }}
-          transition={{ duration: 1.7, repeat: Infinity, ease: "easeInOut" }}
-          className="absolute inset-0 rounded-[2rem] bg-ember blur-2xl"
+    <div className="flex flex-col items-center gap-3 py-14 text-center">
+      <svg viewBox="0 0 240 170" className="h-44 w-full max-w-[280px]">
+        {BRANCHES.map((b, i) => {
+          const delay = i * 0.05;
+          return (
+            <motion.path
+              key={`out-${i}`}
+              d={outPath(b)}
+              fill="none"
+              stroke="var(--ember)"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              initial={false}
+              animate={{
+                pathLength: [0, 1, 1, 1, 1],
+                opacity: [0, 0.7, 0.7, 0.5, 0],
+              }}
+              transition={{
+                duration: CYCLE_S,
+                repeat: Infinity,
+                ease: "easeInOut",
+                delay,
+                times: [T.branchOutStart, T.branchOutEnd, T.hold, T.settle, 1],
+              }}
+            />
+          );
+        })}
+        {BRANCHES.map((b, i) => {
+          const delay = i * 0.05;
+          return (
+            <motion.path
+              key={`in-${i}`}
+              d={inPath(b)}
+              fill="none"
+              stroke="var(--ember)"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              initial={false}
+              animate={{
+                pathLength: [0, 0, 1, 1, 1],
+                opacity: [0, 0, 0.8, 0.5, 0],
+              }}
+              transition={{
+                duration: CYCLE_S,
+                repeat: Infinity,
+                ease: "easeInOut",
+                delay,
+                times: [T.convergeStart, T.convergeStart, T.convergeEnd, T.settle, 1],
+              }}
+            />
+          );
+        })}
+
+        <motion.circle
+          cx={SOURCE.x}
+          cy={SOURCE.y}
+          r={6}
+          fill="var(--ember)"
+          animate={{ scale: [0.9, 1.15, 1, 1, 0.9], opacity: [0.6, 1, 0.8, 0.5, 0.6] }}
+          transition={{ duration: CYCLE_S, repeat: Infinity, ease: "easeInOut", times: [0, T.branchOutEnd, T.hold, T.settle, 1] }}
         />
+        {BRANCHES.map((b, i) => (
+          <motion.circle
+            key={`node-${i}`}
+            cx={b.x}
+            cy={b.y}
+            r={5}
+            fill="var(--peach)"
+            initial={false}
+            animate={{ scale: [0, 1, 1, 1, 0], opacity: [0, 1, 1, 0.6, 0] }}
+            transition={{
+              duration: CYCLE_S,
+              repeat: Infinity,
+              ease: "easeInOut",
+              delay: i * 0.05,
+              times: [T.branchOutStart, T.branchOutEnd, T.hold, T.settle, 1],
+            }}
+          />
+        ))}
+        <motion.circle
+          cx={FINAL.x}
+          cy={FINAL.y}
+          r={7}
+          fill="var(--ember)"
+          initial={false}
+          animate={{ scale: [0, 0, 1, 1.3, 0], opacity: [0, 0, 1, 1, 0] }}
+          transition={{
+            duration: CYCLE_S,
+            repeat: Infinity,
+            ease: "easeInOut",
+            times: [T.convergeStart, T.convergeStart, T.convergeEnd, T.settle, 1],
+          }}
+        />
+      </svg>
+
+      <div className="relative h-6">
         <AnimatePresence mode="popLayout">
           <motion.div
             key={index}
-            initial={{ opacity: 0, x: 48, rotate: 10, scale: 0.92 }}
-            animate={{ opacity: 1, x: 0, rotate: 0, scale: 1 }}
-            exit={{ opacity: 0, x: -48, rotate: -10, scale: 0.92 }}
-            transition={{ type: "spring", bounce: 0.3, duration: 0.5 }}
-            className="glass absolute inset-0 flex flex-col items-center justify-center gap-2.5 rounded-2xl"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.3 }}
+            role="status"
+            aria-live="polite"
+            className="absolute inset-x-0 flex items-center justify-center gap-2 text-sm text-cream/70"
           >
-            <Icon className="h-6 w-6 text-ember" />
-            <p className="text-sm text-cream/75">{step.text}</p>
+            <Icon className="h-4 w-4 text-ember" />
+            {step.text}
           </motion.div>
         </AnimatePresence>
-      </div>
-
-      <div className="flex gap-1.5" role="status" aria-live="polite">
-        <span className="sr-only">{step.text}</span>
-        {STEPS.map((_, i) => (
-          <span
-            key={i}
-            aria-hidden
-            className={`h-1.5 w-1.5 rounded-full transition-colors duration-300 ${
-              i === index ? "bg-ember" : "bg-glass-strong"
-            }`}
-          />
-        ))}
       </div>
     </div>
   );

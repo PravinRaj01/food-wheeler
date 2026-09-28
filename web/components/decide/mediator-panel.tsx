@@ -2,6 +2,7 @@
 
 import { motion } from "motion/react";
 import type { RankingRow, TiebreakerResponse } from "@/lib/decide/types";
+import { DevComparison } from "@/components/decide/dev-comparison";
 
 export function MediatorPanel({
   response,
@@ -35,13 +36,7 @@ export function MediatorPanel({
         ))}
       </div>
 
-      {devMode && response.comparison && (
-        <div className="mb-4 rounded-lg bg-black/30 p-3 text-left font-mono text-[10px] text-cream/60">
-          {Object.entries(response.comparison)
-            .map(([id, c]) => (c.error ? `${id}: n/a` : `${id}: ${c.top_name} ${Math.round((c.top_p ?? 0) * 100)}%`))
-            .join("   ")}
-        </div>
-      )}
+      {devMode && response.comparison && <DevComparison comparison={response.comparison} />}
 
       <div className="grid grid-cols-2 gap-3">
         {response.question.options.map((opt) => (
