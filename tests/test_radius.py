@@ -269,6 +269,22 @@ def test_list_places_filters_by_cuisine_and_diet():
     assert [p["id"] for p in places] == ["mex1"]
 
 
+def test_list_places_cuisine_filter_matches_any_comma_separated_needle():
+    # A frontend group like "Western" sends several needles at once (see
+    # web/lib/decide/cuisines.ts) - matching ANY of them, not requiring the
+    # whole comma-joined string as one literal substring.
+    results = [
+        _fake_place("thai1", 1.0, cuisine="Thai"),
+        _fake_place("american1", 2.0, cuisine="American"),
+        _fake_place("italian1", 3.0, cuisine="Italian"),
+    ]
+    with patch.object(candidates, "_fetch_for_radius", return_value=results):
+        places, source = candidates.list_places(
+            {"lat": 1, "lng": 1}, radius_km=5, cuisine="western,american,italian"
+        )
+    assert {p["id"] for p in places} == {"american1", "italian1"}
+
+
 def test_list_places_returns_real_results_even_when_sparse():
     # A single real nearby place is still real - it must never be swapped
     # for the mock set just because it's the only one found.

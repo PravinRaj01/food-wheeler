@@ -4,7 +4,6 @@ import { Logo } from "@/components/logo";
 import { InstallButton } from "@/components/install-prompt";
 import { LiveClock } from "@/components/live-clock";
 import { StandaloneRedirect } from "@/components/standalone-redirect";
-import { IdleWheel } from "@/components/decide/wheel";
 
 // In its own voice throughout - the third wheel talking about itself, not a
 // feature list.
@@ -96,11 +95,10 @@ export default function LandingPage() {
           </div>
         </div>
 
-        {/* A live, idling version of the real wheel instead of a static
-            graphic - the same canvas drawing this app actually spins with,
-            just turning slowly and going nowhere in particular. */}
-        <div className="mx-auto w-full max-w-[320px] md:max-w-[380px]">
-          <IdleWheel />
+        {/* Back to the slowly spinning logo mark - the live idling wheel
+            demo tried here didn't land as well as this simpler mark. */}
+        <div className="pointer-events-none mx-auto w-full max-w-[280px] opacity-90 md:max-w-[360px]">
+          <Logo className="h-full w-full" style={{ animation: "spin 40s linear infinite" }} />
         </div>
       </section>
 
@@ -167,6 +165,10 @@ export default function LandingPage() {
           <LiveClock />
         </div>
       </footer>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }

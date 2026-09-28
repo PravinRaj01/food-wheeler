@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideReducer, initialState } from "./machine";
+import { canSubmit, decideReducer, initialState } from "./machine";
 import type { Candidate, MatchResponse, TiebreakerResponse } from "./types";
 
 const candidate = (id: string, overrides: Partial<Candidate> = {}): Candidate => ({
@@ -63,17 +63,17 @@ describe("initialState", () => {
 });
 
 describe("decideReducer", () => {
-  it("SET_NAMES stores both names, moves to p1, and marks hydrated", () => {
+  it("SET_NAMES stores both names, moves to input, and marks hydrated", () => {
     const s = decideReducer(initialState("laya", false), { type: "SET_NAMES", p1Name: "Alex", p2Name: "Sam" });
-    expect(s.phase).toBe("p1");
+    expect(s.phase).toBe("input");
     expect(s.p1Name).toBe("Alex");
     expect(s.p2Name).toBe("Sam");
     expect(s.hydrated).toBe(true);
   });
 
-  it("SKIP_NAMES moves to p1 without setting either name, and marks hydrated", () => {
+  it("SKIP_NAMES moves to input without setting either name, and marks hydrated", () => {
     const s = decideReducer(initialState("laya", false), { type: "SKIP_NAMES" });
-    expect(s.phase).toBe("p1");
+    expect(s.phase).toBe("input");
     expect(s.p1Name).toBe("");
     expect(s.p2Name).toBe("");
     expect(s.hydrated).toBe(true);
@@ -101,27 +101,76 @@ describe("decideReducer", () => {
     expect(s.p1Mode).toBe("voice");
   });
 
-  it("PASS_TO_P2 is a no-op when partner one's text is blank", () => {
-    const start = { ...initialState("laya", false), phase: "p1" as const };
-    const s = decideReducer(start, { type: "PASS_TO_P2" });
-    expect(s.phase).toBe("p1");
+  it("OPEN_CARD opens the given card and un-seals it", () => {
+    const sealed = { ...initialState("laya", false), p1Sealed: true, p1Text: "spicy" };
+    const s = decideReducer(sealed, { type: "OPEN_CARD", card: 1 });
+    expect(s.openCard).toBe(1);
+    expect(s.p1Sealed).toBe(false);
+    // Reopening to edit doesn't clear the text itself, just the seal.
+    expect(s.p1Text).toBe("spicy");
   });
 
-  it("PASS_TO_P2 moves to handoff once partner one has typed something", () => {
-    let s = decideReducer({ ...initialState("laya", false), phase: "p1" }, { type: "SET_P1_TEXT", text: "spicy" });
-    s = decideReducer(s, { type: "PASS_TO_P2" });
-    expect(s.phase).toBe("handoff");
+  it("OPEN_CARD is a no-op once the engine is locked", () => {
+    const locked = { ...initialState("laya", false), engineLocked: true };
+    const s = decideReducer(locked, { type: "OPEN_CARD", card: 2 });
+    expect(s.openCard).toBeNull();
   });
 
-  it("PASS_TO_P2 rejects whitespace-only text", () => {
-    let s = decideReducer({ ...initialState("laya", false), phase: "p1" }, { type: "SET_P1_TEXT", text: "   " });
-    s = decideReducer(s, { type: "PASS_TO_P2" });
-    expect(s.phase).toBe("p1");
+  it("CLOSE_CARD collapses whichever card is open without sealing it", () => {
+    const open = { ...initialState("laya", false), openCard: 1 as const };
+    const s = decideReducer(open, { type: "CLOSE_CARD" });
+    expect(s.openCard).toBeNull();
+    expect(s.p1Sealed).toBe(false);
   });
 
-  it("HANDOFF_DONE moves from handoff to p2", () => {
-    const s = decideReducer({ ...initialState("laya", false), phase: "handoff" }, { type: "HANDOFF_DONE" });
-    expect(s.phase).toBe("p2");
+  it("SEAL_CARD is a no-op when that card's text is blank", () => {
+    const s = decideReducer(initialState("laya", false), { type: "SEAL_CARD", card: 1 });
+    expect(s.p1Sealed).toBe(false);
+  });
+
+  it("SEAL_CARD rejects whitespace-only text", () => {
+    let s = decideReducer(initialState("laya", false), { type: "SET_P2_TEXT", text: "   " });
+    s = decideReducer(s, { type: "SEAL_CARD", card: 2 });
+    expect(s.p2Sealed).toBe(false);
+  });
+
+  it("SEAL_CARD seals the card and closes it if it was the open one", () => {
+    let s = decideReducer({ ...initialState("laya", false), openCard: 2 }, { type: "SET_P2_TEXT", text: "casual" });
+    s = decideReducer(s, { type: "SEAL_CARD", card: 2 });
+    expect(s.p2Sealed).toBe(true);
+    expect(s.openCard).toBeNull();
+  });
+
+  it("SEAL_CARD doesn't close a DIFFERENT card that happens to be open", () => {
+    let s = decideReducer({ ...initialState("laya", false), openCard: 2 }, { type: "SET_P1_TEXT", text: "spicy" });
+    s = decideReducer(s, { type: "SEAL_CARD", card: 1 });
+    expect(s.p1Sealed).toBe(true);
+    expect(s.openCard).toBe(2);
+  });
+
+  it("SEAL_NO_PREFERENCE seals a card with empty text regardless of what was typed", () => {
+    let s = decideReducer({ ...initialState("laya", false), openCard: 1 }, { type: "SET_P1_TEXT", text: "spicy" });
+    s = decideReducer(s, { type: "SEAL_NO_PREFERENCE", card: 1 });
+    expect(s.p1Sealed).toBe(true);
+    expect(s.p1Text).toBe("");
+    expect(s.openCard).toBeNull();
+  });
+
+  describe("canSubmit", () => {
+    it("is false until both cards are sealed", () => {
+      const oneSealed = { ...initialState("laya", false), p1Sealed: true, p1Text: "spicy" };
+      expect(canSubmit(oneSealed)).toBe(false);
+    });
+
+    it("is true once both are sealed and at least one has text", () => {
+      const both = { ...initialState("laya", false), p1Sealed: true, p1Text: "spicy", p2Sealed: true, p2Text: "" };
+      expect(canSubmit(both)).toBe(true);
+    });
+
+    it("is false when both are sealed but both said 'anything's fine' (blank)", () => {
+      const bothBlank = { ...initialState("laya", false), p1Sealed: true, p1Text: "", p2Sealed: true, p2Text: "" };
+      expect(canSubmit(bothBlank)).toBe(false);
+    });
   });
 
   it("SET_ENGINE is ignored once locked", () => {
@@ -191,11 +240,19 @@ describe("decideReducer", () => {
     expect(s.candidates).toEqual(response.candidates);
   });
 
-  it("SUBMIT_ERROR from a first-round submit falls back to p2 so the user can retry", () => {
-    const submitting = { ...initialState("laya", false), phase: "submitting" as const, round: 0 };
+  it("SUBMIT_ERROR from a first-round submit falls back to input, keeping both cards sealed so the user can retry", () => {
+    const submitting = {
+      ...initialState("laya", false),
+      phase: "submitting" as const,
+      round: 0,
+      p1Sealed: true,
+      p2Sealed: true,
+    };
     const s = decideReducer(submitting, { type: "SUBMIT_ERROR", message: "network" });
-    expect(s.phase).toBe("p2");
+    expect(s.phase).toBe("input");
     expect(s.errorMessage).toBe("network");
+    expect(s.p1Sealed).toBe(true);
+    expect(s.p2Sealed).toBe(true);
   });
 
   it("SUBMIT_ERROR from a later round falls back to mediator instead of losing the tiebreaker context", () => {
@@ -231,45 +288,57 @@ describe("decideReducer", () => {
     const s = decideReducer(initialState("laya", false), {
       type: "RESTORE_SESSION",
       snapshot: {
-        phase: "p2",
+        phase: "input",
         p1Name: "Alex",
         p2Name: "Sam",
         p1Text: "spicy",
         p1Mode: "voice",
+        p1Sealed: true,
         p2Text: "",
         p2Mode: "typed",
+        p2Sealed: false,
         radiusKm: 5,
       },
     });
-    expect(s.phase).toBe("p2");
+    expect(s.phase).toBe("input");
     expect(s.p1Name).toBe("Alex");
     expect(s.p2Name).toBe("Sam");
     expect(s.p1Text).toBe("spicy");
     expect(s.p1Mode).toBe("voice");
+    expect(s.p1Sealed).toBe(true);
+    expect(s.p2Sealed).toBe(false);
     expect(s.radiusKm).toBe(5);
+    // Not part of the snapshot - a reload always restores both cards
+    // collapsed regardless of what was open when the tab closed.
+    expect(s.openCard).toBeNull();
     // Everything not in the snapshot (engine, devMode, etc.) is untouched.
     expect(s.engine).toBe("laya");
     expect(s.hydrated).toBe(true);
   });
 
-  it("RESET returns to p1 (not names - already asked this session), keeping names and the radius preference", () => {
+  it("RESET returns to input (not names - already asked this session), keeping names and the radius preference", () => {
     const played = {
       ...initialState("laya", true),
       phase: "reveal" as const,
       p1Name: "Alex",
       p2Name: "Sam",
       p1Text: "spicy",
+      p1Sealed: true,
       p2Text: "casual",
+      p2Sealed: true,
       engineLocked: true,
       radiusKm: 15,
       tiebreakers: [{ question_id: "q", answer: "a", text: "A" }],
     };
     const s = decideReducer(played, { type: "RESET" });
-    expect(s.phase).toBe("p1");
+    expect(s.phase).toBe("input");
     expect(s.p1Name).toBe("Alex");
     expect(s.p2Name).toBe("Sam");
     expect(s.p1Text).toBe("");
     expect(s.p2Text).toBe("");
+    expect(s.p1Sealed).toBe(false);
+    expect(s.p2Sealed).toBe(false);
+    expect(s.openCard).toBeNull();
     expect(s.engineLocked).toBe(false);
     expect(s.tiebreakers).toEqual([]);
     expect(s.radiusKm).toBe(15);

@@ -159,8 +159,8 @@ export function DecidingSequence({
     }
   }, [phase, prefersReducedMotion]);
 
-  const p1Snippet = truncate(p1Text, 30) || p1Name || "Partner One";
-  const p2Snippet = truncate(p2Text, 30) || p2Name || "Partner Two";
+  const p1Snippet = truncate(p1Text, 30) || "Anything's fine";
+  const p2Snippet = truncate(p2Text, 30) || "Anything's fine";
 
   if (prefersReducedMotion) {
     return (
@@ -183,15 +183,31 @@ export function DecidingSequence({
 
   return (
     <div role="status" aria-live="polite" className="flex flex-col items-center gap-4 py-10 text-center">
-      {/* Source: what each partner actually said, or their names */}
-      <motion.div
-        initial={{ opacity: 0, y: -6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
-        className="glass w-full max-w-[280px] rounded-xl px-4 py-2 text-xs text-cream/70"
-      >
-        {decidingIntro(p1Name, p2Name, p1Snippet, p2Snippet)}
-      </motion.div>
+      {/* Screen-reader summary of what each partner said - the pills below
+          are the visual version, kept deliberately compact. */}
+      <p className="sr-only">{decidingIntro(p1Name, p2Name, p1Snippet, p2Snippet)}</p>
+
+      {/* The two sealed cards fly together and shrink into these pills -
+          each shares its layoutId with PartnerCardCollapsed (see
+          components/decide/partner-card.tsx), so Motion animates the
+          ACTUAL shared bounding box across the "input" -> "submitting"
+          phase change instead of a plain fade. */}
+      <div className="grid w-full max-w-[280px] grid-cols-2 gap-3">
+        <motion.div
+          layoutId={prefersReducedMotion ? undefined : "partner-1"}
+          className="glass rounded-2xl p-3"
+        >
+          <p className="truncate text-xs font-medium text-cream">{p1Name || "Partner One"}</p>
+          <p className="mt-1 truncate text-[11px] text-cream/60">{p1Snippet}</p>
+        </motion.div>
+        <motion.div
+          layoutId={prefersReducedMotion ? undefined : "partner-2"}
+          className="glass rounded-2xl p-3"
+        >
+          <p className="truncate text-xs font-medium text-cream">{p2Name || "Partner Two"}</p>
+          <p className="mt-1 truncate text-[11px] text-cream/60">{p2Snippet}</p>
+        </motion.div>
+      </div>
 
       {/* Connector diagram: branch paths fade in immediately, converge
           paths only once real data starts folding back into one. */}

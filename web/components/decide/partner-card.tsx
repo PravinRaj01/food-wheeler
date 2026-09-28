@@ -1,25 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
+import { Lock, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MicButton } from "@/components/decide/mic-button";
 import { useSpeechRecognition, type SpeechErrorCode } from "@/lib/hooks/use-speech-recognition";
+import { SEALED_LABEL, NO_PREFERENCE_LABEL } from "@/lib/copy";
 
 export interface ChipGroup {
   label: string;
   chips: string[];
-}
-
-interface PartnerCardProps {
-  number: 1 | 2;
-  label: string;
-  text: string;
-  onTextChange: (text: string, mode: "typed" | "voice") => void;
-  placeholder: string;
-  chipGroups: ChipGroup[];
-  state: "active" | "waiting" | "locked";
-  accentVar: "--p1" | "--p2";
-  onSpeechError?: (message: string) => void;
 }
 
 const SPEECH_ERROR_MESSAGES: Record<SpeechErrorCode, string> = {
@@ -31,19 +22,86 @@ const SPEECH_ERROR_MESSAGES: Record<SpeechErrorCode, string> = {
   other: "Voice input had a problem.",
 };
 
-export function PartnerCard({
+/** A sealed/waiting-to-answer card, shown in the side-by-side grid. Tapping
+ * it morphs it into `PartnerCardPanel` below - both share a layoutId per
+ * partner number, so Motion animates the shared bounding box between them
+ * (and later, on submit, into DecidingSequence's own matching-layoutId
+ * pill - see that component). Never shows the sealed text itself; that's
+ * the whole point of sealing it. */
+export function PartnerCardCollapsed({
+  number,
+  label,
+  sealed,
+  hasText,
+  disabled,
+  accentVar,
+  onOpen,
+}: {
+  number: 1 | 2;
+  label: string;
+  sealed: boolean;
+  hasText: boolean;
+  disabled: boolean;
+  accentVar: "--p1" | "--p2";
+  onOpen: () => void;
+}) {
+  const reduced = useReducedMotion();
+  return (
+    <motion.button
+      type="button"
+      layoutId={reduced ? undefined : `partner-${number}`}
+      onClick={onOpen}
+      disabled={disabled}
+      className={cn(
+        "glass flex h-32 flex-col items-center justify-center gap-2 rounded-2xl p-4 text-center transition-opacity",
+        disabled && "cursor-not-allowed opacity-60",
+      )}
+    >
+      <span
+        className="flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold"
+        style={{ color: `var(${accentVar})`, borderColor: `var(${accentVar})` }}
+      >
+        {number}
+      </span>
+      <p className="truncate text-sm font-medium text-cream">{label}</p>
+      <p className="flex items-center gap-1 text-xs text-cream/50">
+        {sealed && <Lock className="h-3 w-3" />}
+        {sealed ? (hasText ? SEALED_LABEL : NO_PREFERENCE_LABEL) : "Tap to answer"}
+      </p>
+    </motion.button>
+  );
+}
+
+/** The morphed-open editing panel - the textarea, mic and chip groups,
+ * unchanged from the original single PartnerCard, plus Done/"Anything's
+ * fine"/close. Shares its layoutId with the collapsed card it grew from. */
+export function PartnerCardPanel({
   number,
   label,
   text,
   onTextChange,
   placeholder,
   chipGroups,
-  state,
   accentVar,
+  onDone,
+  onNoPreference,
+  onClose,
   onSpeechError,
-}: PartnerCardProps) {
+}: {
+  number: 1 | 2;
+  label: string;
+  text: string;
+  onTextChange: (text: string, mode: "typed" | "voice") => void;
+  placeholder: string;
+  chipGroups: ChipGroup[];
+  accentVar: "--p1" | "--p2";
+  onDone: () => void;
+  onNoPreference: () => void;
+  onClose: () => void;
+  onSpeechError?: (message: string) => void;
+}) {
+  const reduced = useReducedMotion();
   const [interim, setInterim] = useState("");
-  const [peeking, setPeeking] = useState(false);
   const [micBlocked, setMicBlocked] = useState(false);
 
   // useSpeechRecognition stashes fresh callbacks in a ref on every render
@@ -64,15 +122,13 @@ export function PartnerCard({
     onEnd: () => setInterim(""),
   });
 
-  const isActive = state === "active";
-  const isLocked = state === "locked";
-
   return (
-    <div
-      className={cn("surface glass rounded-2xl p-5 transition-opacity", !isActive && "opacity-55")}
-      style={{ "--surface-tint": `var(${accentVar})` } as React.CSSProperties}
-      onClick={() => isLocked && setPeeking((p) => !p)}
-      role={isLocked ? "button" : undefined}
+    <motion.div
+      layoutId={reduced ? undefined : `partner-${number}`}
+      initial={reduced ? { opacity: 0 } : false}
+      animate={reduced ? { opacity: 1 } : undefined}
+      exit={reduced ? { opacity: 0 } : undefined}
+      className="glass fixed inset-x-4 top-20 z-50 max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-2xl p-5 md:inset-x-auto md:left-1/2 md:w-full md:max-w-md md:-translate-x-1/2"
     >
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -84,26 +140,22 @@ export function PartnerCard({
           </span>
           <h2 className="text-sm font-medium tracking-wide text-cream/70 uppercase">{label}</h2>
         </div>
-        <span className="text-[11px]" style={{ color: isActive ? `var(${accentVar})` : "var(--line-strong)" }}>
-          {isActive ? "Your turn" : isLocked ? "Locked in" : "Waiting"}
-        </span>
+        <button type="button" onClick={onClose} className="text-cream/50 hover:text-cream" aria-label="Close">
+          <X className="h-5 w-5" />
+        </button>
       </div>
 
       <div className="relative">
         <textarea
+          autoFocus
           rows={3}
           maxLength={500}
           value={text}
-          disabled={!isActive}
           onChange={(e) => onTextChange(e.target.value, "typed")}
           placeholder={placeholder}
-          className={cn(
-            "w-full resize-none rounded-xl border border-line bg-glass px-4 py-3 pr-12 text-sm text-cream placeholder-cream/30 transition-[filter]",
-            "outline-none focus:border-ember focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember",
-            isLocked && !peeking && "blur-md select-none",
-          )}
+          className="w-full resize-none rounded-xl border border-line bg-glass px-4 py-3 pr-12 text-sm text-cream placeholder-cream/30 outline-none focus:border-ember focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember"
         />
-        {isActive && speech.isSupported && (
+        {speech.isSupported && (
           <MicButton listening={speech.isListening} disabled={micBlocked} onClick={speech.toggle} />
         )}
       </div>
@@ -118,12 +170,11 @@ export function PartnerCard({
                 <button
                   key={chip}
                   type="button"
-                  disabled={!isActive}
                   onClick={() => {
                     const sep = text && !/[\s,]$/.test(text) ? ", " : "";
                     onTextChange(text + sep + chip, "typed");
                   }}
-                  className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors enabled:hover:text-cream disabled:opacity-40"
+                  className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors hover:text-cream"
                 >
                   {chip}
                 </button>
@@ -132,6 +183,24 @@ export function PartnerCard({
           </div>
         ))}
       </div>
-    </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={onNoPreference}
+          className="text-xs text-cream/50 underline underline-offset-4 hover:text-cream"
+        >
+          {NO_PREFERENCE_LABEL}
+        </button>
+        <button
+          type="button"
+          onClick={onDone}
+          disabled={!text.trim()}
+          className="rounded-full bg-ember px-5 py-2 text-sm font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Done
+        </button>
+      </div>
+    </motion.div>
   );
 }

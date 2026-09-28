@@ -21,9 +21,8 @@ export function decidingIntro(p1Name: string, p2Name: string, p1Snippet: string,
 /** The reveal screen's kicker line, above the winning restaurant's name. */
 export const REVEAL_KICKER = "Your third wheel picked";
 
-/** The handoff screen, passing the phone from Partner One to Partner Two. */
-export function handoffLine(p1Name: string, p2Name: string): string {
-  const p1 = nameOr(p1Name, "");
-  const p2 = nameOr(p2Name, "Partner Two");
-  return p1 ? `Pass it to ${p2}. No peeking, ${p1}.` : `Pass it to ${p2}. No peeking.`;
-}
+/** A sealed partner card's status line - the answer is in, no peeking. */
+export const SEALED_LABEL = "Sealed — no peeking";
+
+/** A partner card sealed via "Anything's fine" instead of an actual answer. */
+export const NO_PREFERENCE_LABEL = "Anything's fine";

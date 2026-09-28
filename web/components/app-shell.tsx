@@ -31,10 +31,11 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
 
   return (
     <div className="flex min-h-dvh flex-col text-cream">
-      {/* Sticky header - a surface chrome bar, not the canvas itself, so it
-          gets surface-fg text rather than inheriting the canvas-fg set on
-          the root div above. */}
-      <header className="safe-top hairline-b sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between bg-surface/70 px-5 text-surface-fg backdrop-blur-md">
+      {/* Sticky header - a blurred canvas-toned bar (not surface: a surface
+          tone here turned into a bright bar sitting on top of the dark
+          canvas in dark mode, which read as broken chrome rather than a
+          deliberate lift-off-the-page moment). */}
+      <header className="safe-top hairline-b sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between bg-canvas/75 px-5 text-canvas-fg backdrop-blur-md">
         <Link href="/decide" className="flex items-center gap-2">
           <Logo className="h-6 w-6" />
           <span className="font-display text-base font-semibold tracking-tight">Food Wheeler</span>
@@ -83,8 +84,9 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
         <main className="flex-1 overflow-y-auto pb-20 md:pb-0">{children}</main>
       </div>
 
-      {/* Mobile bottom tabs - a surface bar, same reasoning as the header. */}
-      <nav className="hairline-b safe-bottom fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t bg-surface/85 px-2 py-2 backdrop-blur-lg md:hidden">
+      {/* Mobile bottom tabs - same canvas-toned bar as the header, same
+          reasoning. */}
+      <nav className="hairline-b safe-bottom fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t bg-canvas/85 px-2 py-2 backdrop-blur-lg md:hidden">
         {navItems.map((item) => {
           const active = pathname === item.href || pathname.startsWith(item.href + "/");
           return (
@@ -93,7 +95,7 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
               href={item.href}
               className={cn(
                 "flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 transition-all",
-                active ? "text-surface-fg scale-105" : "text-surface-fg/50",
+                active ? "text-cream scale-105" : "text-cream/50",
               )}
             >
               <item.icon className="h-5 w-5" />
@@ -102,12 +104,12 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
           );
         })}
         {signedIn ? (
-          <button onClick={handleLogout} className="flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 text-surface-fg/50">
+          <button onClick={handleLogout} className="flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 text-cream/50">
             <LogOut className="h-5 w-5" />
             <span className="text-[10px] font-medium tracking-wide">Logout</span>
           </button>
         ) : (
-          <Link href="/login" className="flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 text-surface-fg/50">
+          <Link href="/login" className="flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 text-cream/50">
             <LogIn className="h-5 w-5" />
             <span className="text-[10px] font-medium tracking-wide">Log in</span>
           </Link>

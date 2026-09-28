@@ -462,8 +462,13 @@ def list_places(
     results, source = fetched, "osm"
 
     if cuisine:
-        needle = cuisine.lower()
-        results = [r for r in results if needle in r["cuisine"].lower()]
+        # Comma-separated needles, matching ANY of them - the frontend's
+        # cuisine filters are grouped labels (e.g. "Western" covers
+        # american/burger/steak/italian/pizza/european), not single OSM
+        # cuisine strings. See web/lib/decide/cuisines.ts.
+        needles = [n.strip().lower() for n in cuisine.split(",") if n.strip()]
+        if needles:
+            results = [r for r in results if any(n in r["cuisine"].lower() for n in needles)]
     if diet:
         results = [r for r in results if r.get("dims", {}).get("diet") == diet]
 

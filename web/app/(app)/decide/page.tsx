@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import Link from "next/link";
-import { AnimatePresence } from "motion/react";
+import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { MapPin } from "lucide-react";
-import { decideReducer, initialState } from "@/lib/decide/machine";
+import { decideReducer, initialState, canSubmit } from "@/lib/decide/machine";
 import type { SessionSnapshot } from "@/lib/decide/machine";
 import { decide, listEngines, listPlaces, warmEngine } from "@/lib/api";
 import type { Candidate, DecideRequest, EngineId, Location } from "@/lib/decide/types";
+import { CUISINES } from "@/lib/decide/cuisines";
 import { useLocation } from "@/lib/location/location-provider";
 import { useOnline } from "@/lib/hooks/use-online";
 import { useToast } from "@/lib/hooks/use-toast";
@@ -16,9 +17,8 @@ import { local, session } from "@/lib/safe-storage";
 import { getCurrentUserId } from "@/lib/actions/user";
 import { enqueueDecision } from "@/lib/sync/outbox";
 import { ToastStack } from "@/components/toast-stack";
-import { PartnerCard } from "@/components/decide/partner-card";
+import { PartnerCardCollapsed, PartnerCardPanel } from "@/components/decide/partner-card";
 import { RadiusSlider } from "@/components/decide/radius-slider";
-import { HandoffScreen } from "@/components/decide/handoff-screen";
 import { NamesStep } from "@/components/decide/names-step";
 import { DecidingSequence } from "@/components/decide/deciding-sequence";
 import type { PendingDecideResult } from "@/components/decide/deciding-sequence";
@@ -39,7 +39,7 @@ const SESSION_KEY = "fw_session";
 // "No X" phrasing matches the exclusion regex the same way free-typed text
 // already does.
 const CHIP_GROUPS = [
-  { label: "Craving", chips: ["Malay", "Chinese", "Indian", "Japanese", "Korean", "Thai", "Western"] },
+  { label: "Craving", chips: CUISINES.map((c) => c.label) },
   { label: "Mood", chips: ["Quick bite", "Sit-down"] },
   { label: "Heat", chips: ["Spicy", "Mild"] },
   { label: "Budget", chips: ["Budget", "Mid-range", "Treat ourselves"] },
@@ -113,7 +113,7 @@ export default function DecidePage() {
     if (sessionRaw) {
       try {
         const snapshot = JSON.parse(sessionRaw) as SessionSnapshot;
-        if (snapshot && (snapshot.phase === "names" || snapshot.phase === "p1" || snapshot.phase === "p2")) {
+        if (snapshot && (snapshot.phase === "names" || snapshot.phase === "input")) {
           dispatch({ type: "RESTORE_SESSION", snapshot });
           restoredSession = true;
         }
@@ -176,29 +176,32 @@ export default function DecidePage() {
   }, []);
 
   // Keep an in-progress round alive across a reload or the PWA being
-  // backgrounded and killed - only while it's actually resumable (names/p1/
-  // p2; wheel/mediator/reveal all depend on a live server response that was
-  // never persisted, so there's nothing safe to restore into once past p2).
+  // backgrounded and killed - only while it's actually resumable (names or
+  // input; wheel/mediator/reveal all depend on a live server response that
+  // was never persisted, so there's nothing safe to restore into once past
+  // input).
   //
   // Gated on `state.hydrated`, not just checked inline: without it, this
   // effect's very first run (before the mount-restore effect's dispatch
   // above has been applied to a render) would write the untouched DEFAULT
-  // state - names/p1/p2 all blank - and clobber a real saved snapshot with
+  // state - names/input all blank - and clobber a real saved snapshot with
   // blanks a moment before the restore could ever read it. Gating on state
   // (set by the SAME dispatches the restore effect already uses) rather
   // than a ref means this can't fire on that pre-restore render no matter
   // how these two effects happen to interleave.
   useEffect(() => {
     if (!state.hydrated) return;
-    if (state.phase !== "names" && state.phase !== "p1" && state.phase !== "p2") return;
+    if (state.phase !== "names" && state.phase !== "input") return;
     const snapshot: SessionSnapshot = {
       phase: state.phase,
       p1Name: state.p1Name,
       p2Name: state.p2Name,
       p1Text: state.p1Text,
       p1Mode: state.p1Mode,
+      p1Sealed: state.p1Sealed,
       p2Text: state.p2Text,
       p2Mode: state.p2Mode,
+      p2Sealed: state.p2Sealed,
       radiusKm: state.radiusKm,
     };
     session.set(SESSION_KEY, JSON.stringify(snapshot));
@@ -209,8 +212,10 @@ export default function DecidePage() {
     state.p2Name,
     state.p1Text,
     state.p1Mode,
+    state.p1Sealed,
     state.p2Text,
     state.p2Mode,
+    state.p2Sealed,
     state.radiusKm,
   ]);
 
@@ -228,7 +233,7 @@ export default function DecidePage() {
   // is ignored entirely, this is purely a cache-warming side effect.
   useEffect(() => {
     if (loc.status !== "granted" || !loc.location) return;
-    if (state.phase !== "p1" && state.phase !== "p2") return;
+    if (state.phase !== "input") return;
     const handle = setTimeout(() => {
       listPlaces(loc.location, state.radiusKm).catch(() => {});
     }, 800);
@@ -350,6 +355,12 @@ export default function DecidePage() {
   const resetGame = () => dispatch({ type: "RESET" });
 
   return (
+    // LayoutGroup, not just AnimatePresence: the shared-layout morph spans
+    // three different render sites (the collapsed card in this component,
+    // its panel also in this component, and DecidingSequence's matching
+    // pill in a completely different subtree) - one group ties Motion's
+    // layout projection together across all of them.
+    <LayoutGroup>
     <div className="mx-auto max-w-lg px-5 py-6">
       <ToastStack toasts={toasts} />
 
@@ -367,7 +378,7 @@ export default function DecidePage() {
           {loc.status === "granted" ? "Near you" : loc.status === "locating" ? "Locating…" : "Location off"}
         </Link>
 
-        {(state.phase === "p1" || state.phase === "p2") && (
+        {state.phase === "input" && (
           <div className="mt-4">
             <RadiusSlider
               km={state.radiusKm}
@@ -378,7 +389,12 @@ export default function DecidePage() {
         )}
       </header>
 
-      <AnimatePresence mode="wait">
+      {/* popLayout, not wait: "wait" fully unmounts the input phase before
+          mounting "submitting", which would never give the sealed cards and
+          DecidingSequence's matching-layoutId pills the overlapping frame
+          they need to actually morph into each other - see partner-card.tsx
+          and deciding-sequence.tsx's own comments on this. */}
+      <AnimatePresence mode="popLayout">
         {state.phase === "names" && (
           <NamesStep
             key="names"
@@ -387,44 +403,42 @@ export default function DecidePage() {
           />
         )}
 
-        {(state.phase === "p1" || state.phase === "p2") && (
+        {state.phase === "input" && (
           <div key="input" className="space-y-4">
-            <PartnerCard
-              number={1}
-              label={state.p1Name || "Partner One"}
-              text={state.p1Text}
-              onTextChange={(text, mode) => dispatch({ type: "SET_P1_TEXT", text, mode })}
-              placeholder="Spicy, under $30, somewhere close…"
-              chipGroups={CHIP_GROUPS}
-              state={state.phase === "p1" ? "active" : "locked"}
-              accentVar="--p1"
-              onSpeechError={toast}
-            />
-            <PartnerCard
-              number={2}
-              label={state.p2Name || "Partner Two"}
-              text={state.p2Text}
-              onTextChange={(text, mode) => dispatch({ type: "SET_P2_TEXT", text, mode })}
-              placeholder="Casual, a patio if possible, no burgers…"
-              chipGroups={CHIP_GROUPS}
-              state={state.phase === "p2" ? "active" : "waiting"}
-              accentVar="--p2"
-              onSpeechError={toast}
-            />
-            {state.phase === "p1" ? (
-              <button
-                type="button"
-                disabled={!state.p1Text.trim()}
-                onClick={() => dispatch({ type: "PASS_TO_P2" })}
-                className="w-full rounded-xl bg-ember py-3 text-sm font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                Pass to {state.p2Name || "Partner Two"}
-              </button>
-            ) : (
+            <div className="grid grid-cols-2 gap-3">
+              {state.openCard === 1 ? (
+                <div className="h-32" />
+              ) : (
+                <PartnerCardCollapsed
+                  number={1}
+                  label={state.p1Name || "Partner One"}
+                  sealed={state.p1Sealed}
+                  hasText={Boolean(state.p1Text.trim())}
+                  disabled={state.engineLocked}
+                  accentVar="--p1"
+                  onOpen={() => dispatch({ type: "OPEN_CARD", card: 1 })}
+                />
+              )}
+              {state.openCard === 2 ? (
+                <div className="h-32" />
+              ) : (
+                <PartnerCardCollapsed
+                  number={2}
+                  label={state.p2Name || "Partner Two"}
+                  sealed={state.p2Sealed}
+                  hasText={Boolean(state.p2Text.trim())}
+                  disabled={state.engineLocked}
+                  accentVar="--p2"
+                  onOpen={() => dispatch({ type: "OPEN_CARD", card: 2 })}
+                />
+              )}
+            </div>
+
+            {canSubmit(state) && (
               <>
                 <button
                   type="button"
-                  disabled={(!state.p1Text.trim() && !state.p2Text.trim()) || !isOnline}
+                  disabled={!isOnline}
                   onClick={findTable}
                   className="w-full rounded-xl bg-ember py-3 text-base font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-35"
                 >
@@ -436,15 +450,6 @@ export default function DecidePage() {
               </>
             )}
           </div>
-        )}
-
-        {state.phase === "handoff" && (
-          <HandoffScreen
-            key="handoff"
-            p1Name={state.p1Name}
-            p2Name={state.p2Name}
-            onReady={() => dispatch({ type: "HANDOFF_DONE" })}
-          />
         )}
 
         {state.phase === "submitting" && (
@@ -503,6 +508,55 @@ export default function DecidePage() {
         )}
       </AnimatePresence>
 
+      {/* The morphed-open card panel, plus its backdrop - only ever mounted
+          during "input", separate from the AnimatePresence above so it can
+          overlay the whole phase (not just its own grid slot). Tapping the
+          backdrop closes without sealing. */}
+      <AnimatePresence>
+        {state.openCard != null && (
+          <motion.div
+            key="card-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => dispatch({ type: "CLOSE_CARD" })}
+          />
+        )}
+        {state.openCard === 1 && (
+          <PartnerCardPanel
+            key="panel-1"
+            number={1}
+            label={state.p1Name || "Partner One"}
+            text={state.p1Text}
+            onTextChange={(text, mode) => dispatch({ type: "SET_P1_TEXT", text, mode })}
+            placeholder="Spicy, under RM30, somewhere close…"
+            chipGroups={CHIP_GROUPS}
+            accentVar="--p1"
+            onDone={() => dispatch({ type: "SEAL_CARD", card: 1 })}
+            onNoPreference={() => dispatch({ type: "SEAL_NO_PREFERENCE", card: 1 })}
+            onClose={() => dispatch({ type: "CLOSE_CARD" })}
+            onSpeechError={toast}
+          />
+        )}
+        {state.openCard === 2 && (
+          <PartnerCardPanel
+            key="panel-2"
+            number={2}
+            label={state.p2Name || "Partner Two"}
+            text={state.p2Text}
+            onTextChange={(text, mode) => dispatch({ type: "SET_P2_TEXT", text, mode })}
+            placeholder="Casual, a patio if possible, no burgers…"
+            chipGroups={CHIP_GROUPS}
+            accentVar="--p2"
+            onDone={() => dispatch({ type: "SEAL_CARD", card: 2 })}
+            onNoPreference={() => dispatch({ type: "SEAL_NO_PREFERENCE", card: 2 })}
+            onClose={() => dispatch({ type: "CLOSE_CARD" })}
+            onSpeechError={toast}
+          />
+        )}
+      </AnimatePresence>
+
       <LocationPrompt
         open={locationPromptOpen}
         status={loc.status}
@@ -520,5 +574,6 @@ export default function DecidePage() {
         }}
       />
     </div>
+    </LayoutGroup>
   );
 }
