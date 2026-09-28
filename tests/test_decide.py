@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import app as app_module  # noqa: E402
+from candidates import PlacesUnavailable  # noqa: E402
 from engines import EngineManager  # noqa: E402
 from fakes import FakeEngine  # noqa: E402
 
@@ -35,6 +36,9 @@ DIET_CANDS = [
     {"id": "vegan_place", "name": "Vegan Place", "cuisine": "Vegan", "tags": ["vegan"],
      "price": "$", "lat": 1.0, "lng": 1.0, "address": "x", "distance_km": 0.6,
      "dims": {"service": "fast_food", "spice": "mild", "setting": "indoor", "price": "low", "diet": "vegan"}},
+    {"id": "veggie_place", "name": "Veggie Place", "cuisine": "Vegetarian", "tags": ["vegetarian"],
+     "price": "$", "lat": 1.0, "lng": 1.0, "address": "x", "distance_km": 0.5,
+     "dims": {"service": "sit_down", "spice": "mild", "setting": "indoor", "price": "mid", "diet": "vegetarian"}},
     {"id": "regular_place", "name": "Regular Place", "cuisine": "American", "tags": [],
      "price": "$", "lat": 1.0, "lng": 1.0, "address": "x", "distance_km": 0.2,
      "dims": {"service": "fast_food", "spice": "mild", "setting": "indoor", "price": "low", "diet": "none"}},
@@ -176,6 +180,24 @@ def test_round_cap_forces_fair_spin(client, fake_manager):
     assert set(data["wheel_ids"]) <= {"a", "b"}
 
 
+def test_decide_returns_503_when_every_overpass_endpoint_fails(client, fake_manager):
+    with patch("app.get_candidates", side_effect=PlacesUnavailable("fetch")):
+        resp = _post(client, partner1={"text": "x"}, partner2={"text": "y"})
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data["status"] == "error"
+    assert data["code"] == "PLACES_UNAVAILABLE"
+
+
+def test_decide_returns_no_places_nearby_when_radius_is_empty(client, fake_manager):
+    with patch("app.get_candidates", side_effect=PlacesUnavailable("empty")):
+        resp = _post(client, partner1={"text": "x"}, partner2={"text": "y"})
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data["status"] == "error"
+    assert data["code"] == "NO_PLACES_NEARBY"
+
+
 def test_budget_guard_excludes_expensive_option(client, fake_manager):
     _, engine_a, _ = fake_manager
 
@@ -189,6 +211,47 @@ def test_budget_guard_excludes_expensive_option(client, fake_manager):
     data = resp.get_json()
     assert data["status"] == "match"
     assert data["winner"]["id"] == "c"
+
+
+def test_budget_guard_recognizes_ringgit(client, fake_manager):
+    # Same numeric guard, but with RM/MYR instead of $ - the app's actual
+    # userbase in Malaysia was typing "under RM30" and getting ignored.
+    _, engine_a, _ = fake_manager
+
+    def _predict(calls):
+        _, ids, _ = calls[-1]
+        assert set(ids) == {"c"}
+        return {"c": 1.0}
+
+    engine_a._probabilities = _predict
+    resp = _post(client, partner1={"text": "under RM20 please"}, partner2={"text": "anything"})
+    assert resp.get_json()["winner"]["id"] == "c"
+
+
+def test_budget_guard_low_tier_keyword_with_no_number(client, fake_manager):
+    _, engine_a, _ = fake_manager
+
+    def _predict(calls):
+        _, ids, _ = calls[-1]
+        assert set(ids) == {"c"}  # only FIXED_CANDS entry with dims.price == "low"
+        return {"c": 1.0}
+
+    engine_a._probabilities = _predict
+    resp = _post(client, partner1={"text": "keep it cheap"}, partner2={"text": "anything"})
+    assert resp.get_json()["winner"]["id"] == "c"
+
+
+def test_budget_guard_high_tier_keyword_excludes_cheapest(client, fake_manager):
+    _, engine_a, _ = fake_manager
+
+    def _predict(calls):
+        _, ids, _ = calls[-1]
+        assert set(ids) == {"a", "b"}  # excludes "c", the only "low" tier entry
+        return {i: 1 / len(ids) for i in ids}
+
+    engine_a._probabilities = _predict
+    resp = _post(client, partner1={"text": "let's treat ourselves tonight"}, partner2={"text": "anything"})
+    assert resp.get_json()["status"] in ("match", "tiebreaker")
 
 
 def test_exclusion_guard_removes_burgers(client, fake_manager):
@@ -218,6 +281,22 @@ def test_diet_guard_filters_to_halal(client, fake_manager):
     assert resp.get_json()["winner"]["id"] == "halal_place"
 
 
+def test_diet_guard_filters_to_vegetarian(client, fake_manager):
+    # "vegetarian" must resolve to its own dims.diet value, not fall through
+    # to "none" or get conflated with "vegan" - they're different tags.
+    _, engine_a, _ = fake_manager
+
+    def _predict(calls):
+        _, ids, _ = calls[-1]
+        assert ids == ["veggie_place"]
+        return {"veggie_place": 1.0}
+
+    engine_a._probabilities = _predict
+    with patch("app.get_candidates", return_value=(DIET_CANDS, "mock")):
+        resp = _post(client, partner1={"text": "I'm vegetarian"}, partner2={"text": "anything"})
+    assert resp.get_json()["winner"]["id"] == "veggie_place"
+
+
 def test_negated_diet_is_not_a_requirement(client, fake_manager):
     """"no vegan" should exclude the vegan venue (the generic exclusion
     guard) but must NOT be misread as a positive diet requirement - i.e.
@@ -226,9 +305,10 @@ def test_negated_diet_is_not_a_requirement(client, fake_manager):
 
     def _predict(calls):
         _, ids, _ = calls[-1]
-        # vegan_place is gone (excluded), but halal_place and regular_place
-        # both survive - proving "no vegan" wasn't read as "requires halal".
-        assert set(ids) == {"halal_place", "regular_place"}
+        # vegan_place is gone (excluded), but everything else survives -
+        # proving "no vegan" wasn't read as "requires halal" (or any other
+        # single diet tag).
+        assert set(ids) == {"halal_place", "veggie_place", "regular_place"}
         return {i: 1 / len(ids) for i in ids}
 
     engine_a._probabilities = _predict

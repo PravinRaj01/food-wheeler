@@ -1,9 +1,11 @@
 """
 Restaurant candidate sourcing for The Food-Wheeler.
 
-Tries the free OSM Overpass API for real nearby venues; falls back to a
-fixed set of mock venues ("demo mode") when location is unavailable, the
-lookup fails, or too few real venues are nearby.
+Tries the free OSM Overpass API for real nearby venues. The mock venue set
+("demo mode") is used ONLY when no location was given at all - if the
+caller supplied a real location, a fetch failure or a genuinely empty
+radius is surfaced as PlacesUnavailable instead of silently substituting
+demo places at the wrong end of the world (see PlacesUnavailable below).
 """
 import math
 import time
@@ -13,10 +15,29 @@ import requests
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
 ]
 CACHE_TTL_S = 600  # 10 minutes
 MIN_RESULTS_BEFORE_WIDEN = 5
 MIN_RESULTS_BEFORE_FALLBACK = 3
+# A client-side safety net against a stray out-of-circle result (Overpass's
+# own `around` filter should already enforce this server-side); a small
+# epsilon absorbs rounding differences between its great-circle math and
+# haversine_km below.
+RADIUS_FILTER_EPSILON_KM = 0.05
+
+
+class PlacesUnavailable(Exception):
+    """Raised by get_candidates()/list_places() when a REAL location was
+    given but nearby places couldn't be found - `kind` is "fetch" (every
+    Overpass endpoint failed) or "empty" (fetched fine, genuinely nothing
+    within the radius). Only ever raised when location is not None; with no
+    location, returning the mock set is the intended, silent demo-mode
+    behavior, not an error."""
+
+    def __init__(self, kind: str):
+        self.kind = kind
+        super().__init__(kind)
 
 # Continuous radius control ("the Expand Radius flex" - Phase 4, later
 # widened from 3 fixed tiers to a free-form slider up to 50km). Every
@@ -133,6 +154,8 @@ def _diet_from_tags(tags: dict) -> str:
     # First match wins; a venue is rarely tagged for more than one of these.
     if tags.get("diet:vegan") in ("yes", "only"):
         return "vegan"
+    if tags.get("diet:vegetarian") in ("yes", "only"):
+        return "vegetarian"
     if tags.get("diet:halal") in ("yes", "only"):
         return "halal"
     if tags.get("diet:gluten_free") in ("yes", "only"):
@@ -187,11 +210,11 @@ def clamp_radius_km(radius_km) -> float:
 
 def _radius_params(radius_km: float) -> dict:
     """Every Overpass-tuning knob, derived from the radius instead of a
-    fixed tier lookup. Values were chosen to land close to the original 3
-    hand-tuned tiers (local=1.5km/6s/200cap, city=5km/8s/300cap,
-    roadtrip=15km/10s/400cap) at those exact radii, then extend smoothly
-    beyond 15km up to the 50km max."""
-    timeout_s = round(max(6, min(15, 6 + (radius_km - 1.5) * 0.2)))
+    fixed tier lookup. The timeout climbs from 8s at the smallest radius to
+    25s at the 50km max - big-radius queries in dense cities were timing
+    out with the old 15s ceiling and silently falling through to mock data,
+    which is exactly the "places outside the radius" bug this fixes."""
+    timeout_s = round(max(8, min(25, 8 + radius_km * 0.35)))
     result_cap = round(max(200, min(600, 150 + radius_km * 9)))
     max_candidates = 6 if radius_km <= 3 else 8
     stratify = radius_km >= STRATIFY_THRESHOLD_KM
@@ -215,11 +238,21 @@ def _fetch_overpass(lat: float, lng: float, radius_m: int, timeout_s: int, resul
     out center tags {result_cap};
     """
     headers = {"User-Agent": "food-wheeler/1.0 (educational prototype)"}
+    # The HTTP timeout is a few seconds looser than the query's own
+    # [timeout:] so Overpass gets the chance to reply with its own timeout
+    # error (still caught below) instead of us cutting the socket first.
+    http_timeout_s = timeout_s + 5
     for endpoint in OVERPASS_ENDPOINTS:
         try:
             resp = requests.post(
-                endpoint, data={"data": query}, headers=headers, timeout=timeout_s
+                endpoint, data={"data": query}, headers=headers, timeout=http_timeout_s
             )
+            # 429 (rate limited) and 504 (gateway timeout) are exactly what
+            # a public, shared Overpass mirror does under load - falling
+            # through to the next mirror is the right response, not a hard
+            # failure. raise_for_status() raises HTTPError for both (a
+            # RequestException subclass), so the except below already
+            # covers them the same way as a connection failure.
             resp.raise_for_status()
             data = resp.json()
         except (requests.RequestException, ValueError):
@@ -266,10 +299,18 @@ def _fetch_for_radius(lat: float, lng: float, radius_m: int, timeout_s: int, res
     return results
 
 
+def _within_radius(results: list[dict], radius_km: float) -> list[dict]:
+    return [r for r in results if r.get("distance_km", 0) <= radius_km + RADIUS_FILTER_EPSILON_KM]
+
+
 def get_candidates(location: dict | None, radius_km: float = DEFAULT_RADIUS_KM) -> tuple[list[dict], str]:
     """Returns (candidates, source) where source is 'osm' or 'mock'. The AI
     decision engines see only this curated, capped list - see list_places()
-    for the uncurated Explore browsing list."""
+    for the uncurated Explore browsing list.
+
+    Raises PlacesUnavailable if a real location was given but nothing
+    usable came back - see that class's docstring for why this must never
+    silently substitute the mock set in that case."""
     radius_km = clamp_radius_km(radius_km)
     if not location or location.get("lat") is None or location.get("lng") is None:
         return _mock_candidates(None, None), "mock"
@@ -278,13 +319,31 @@ def get_candidates(location: dict | None, radius_km: float = DEFAULT_RADIUS_KM) 
     params = _radius_params(radius_km)
     radii_km = [radius_km] + ([params["widen_km"]] if params["widen_km"] else [])
 
+    any_fetch_succeeded = False
+    best_results: list[dict] | None = None
     for i, r_km in enumerate(radii_km):
         results = _fetch_for_radius(lat, lng, round(r_km * 1000), params["timeout_s"], params["result_cap"])
-        if results is not None and len(results) >= MIN_RESULTS_BEFORE_FALLBACK:
+        if results is None:
+            continue
+        any_fetch_succeeded = True
+        results = _within_radius(results, r_km)
+        # A wider retry isn't guaranteed to return a superset (same result
+        # cap, different Overpass ordering), so keep whichever attempt
+        # found the most rather than just the last one tried.
+        if best_results is None or len(results) > len(best_results):
+            best_results = results
+        if len(results) >= MIN_RESULTS_BEFORE_FALLBACK:
             if len(results) >= MIN_RESULTS_BEFORE_WIDEN or i == len(radii_km) - 1:
                 return _select_diverse(results, params["max_candidates"], stratify=params["stratify"]), "osm"
 
-    return _mock_candidates(lat, lng), "mock"
+    if not any_fetch_succeeded:
+        raise PlacesUnavailable("fetch")
+    if not best_results:
+        raise PlacesUnavailable("empty")
+    # 1-2 real results is still real - return them rather than jumping to
+    # the mock set (which is what put NYC restaurants 15,000km away in
+    # front of a real user).
+    return best_results, "osm"
 
 
 def _pick_diverse(bucket: list[dict], count: int) -> list[dict]:
@@ -347,7 +406,10 @@ def list_places(
     limit: int = PLACES_LIST_LIMIT,
 ) -> tuple[list[dict], str]:
     """The Explore page's uncurated browsing list - up to `limit` places,
-    nearest first, with simple cuisine/diet filters. No AI involved."""
+    nearest first, with simple cuisine/diet filters. No AI involved.
+
+    Raises PlacesUnavailable on the same terms as get_candidates() - see
+    that function's docstring."""
     radius_km = clamp_radius_km(radius_km)
 
     if not location or location.get("lat") is None or location.get("lng") is None:
@@ -356,10 +418,12 @@ def list_places(
         lat, lng = location["lat"], location["lng"]
         params = _radius_params(radius_km)
         fetched = _fetch_for_radius(lat, lng, round(radius_km * 1000), params["timeout_s"], params["result_cap"])
-        if fetched is not None and len(fetched) >= MIN_RESULTS_BEFORE_FALLBACK:
-            results, source = fetched, "osm"
-        else:
-            results, source = _mock_candidates(lat, lng), "mock"
+        if fetched is None:
+            raise PlacesUnavailable("fetch")
+        fetched = _within_radius(fetched, radius_km)
+        if not fetched:
+            raise PlacesUnavailable("empty")
+        results, source = fetched, "osm"
 
     if cuisine:
         needle = cuisine.lower()

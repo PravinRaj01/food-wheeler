@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { MapPin } from "lucide-react";
 import { listPlaces } from "@/lib/api";
-import { useGeolocation } from "@/lib/hooks/use-geolocation";
+import { useLocation } from "@/lib/location/location-provider";
 import { cn } from "@/lib/utils";
 import type { Place } from "@/lib/decide/types";
 import { DEFAULT_RADIUS_KM } from "@/lib/decide/types";
@@ -25,7 +26,7 @@ const DIET_FILTERS: { id: string | null; label: string }[] = [
 ];
 
 export default function ExplorePage() {
-  const geo = useGeolocation();
+  const loc = useLocation();
   const [radiusKm, setRadiusKm] = useState(DEFAULT_RADIUS_KM);
   const [cuisine, setCuisine] = useState("All");
   const [diet, setDiet] = useState<string | null>(null);
@@ -44,7 +45,7 @@ export default function ExplorePage() {
     // a data-fetching library just to satisfy the linter.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    listPlaces(geo.location, radiusKm, { cuisine: cuisine === "All" ? undefined : cuisine, diet: diet ?? undefined })
+    listPlaces(loc.location, radiusKm, { cuisine: cuisine === "All" ? undefined : cuisine, diet: diet ?? undefined })
       .then((res) => {
         if (cancelled) return;
         setPlaces(res.places);
@@ -60,13 +61,13 @@ export default function ExplorePage() {
     return () => {
       cancelled = true;
     };
-  }, [geo.location, radiusKm, cuisine, diet]);
+  }, [loc.location, radiusKm, cuisine, diet]);
 
   return (
     <div className="flex h-[calc(100dvh-3.5rem)] flex-col md:flex-row">
       {/* Map */}
       <div className="relative h-64 shrink-0 md:h-auto md:flex-1">
-        <ExploreMap places={places} userLocation={geo.location} selectedId={selectedId} onSelect={setSelectedId} />
+        <ExploreMap places={places} userLocation={loc.location} selectedId={selectedId} onSelect={setSelectedId} />
         {source === "mock" && (
           <div className="absolute top-3 left-3 rounded-full bg-black/50 px-3 py-1 text-[11px] text-cream/80 backdrop-blur">
             Demo places — allow location for real nearby results
@@ -78,14 +79,13 @@ export default function ExplorePage() {
       <div className="glass flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-4 md:w-96 md:flex-none">
         <div className="flex items-center justify-between">
           <h1 className="font-display text-lg font-semibold text-cream">Explore</h1>
-          <button
-            type="button"
-            onClick={geo.request}
+          <Link
+            href="/settings"
             className="flex items-center gap-1.5 rounded-full bg-glass px-3 py-1.5 text-xs text-cream/60"
           >
             <MapPin className="h-3.5 w-3.5" />
-            {geo.status === "locating" ? "Locating…" : geo.status === "granted" ? "Near you" : "Use my location"}
-          </button>
+            {loc.status === "granted" ? "Near you" : loc.status === "locating" ? "Locating…" : "Demo places"}
+          </Link>
         </div>
 
         <RadiusSlider km={radiusKm} locked={false} onChange={setRadiusKm} />

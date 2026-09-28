@@ -5,13 +5,18 @@ import { cn } from "@/lib/utils";
 import { MicButton } from "@/components/decide/mic-button";
 import { useSpeechRecognition, type SpeechErrorCode } from "@/lib/hooks/use-speech-recognition";
 
+export interface ChipGroup {
+  label: string;
+  chips: string[];
+}
+
 interface PartnerCardProps {
   number: 1 | 2;
   label: string;
   text: string;
   onTextChange: (text: string, mode: "typed" | "voice") => void;
   placeholder: string;
-  chips: string[];
+  chipGroups: ChipGroup[];
   state: "active" | "waiting" | "locked";
   accentVar: "--p1" | "--p2";
   onSpeechError?: (message: string) => void;
@@ -32,7 +37,7 @@ export function PartnerCard({
   text,
   onTextChange,
   placeholder,
-  chips,
+  chipGroups,
   state,
   accentVar,
   onSpeechError,
@@ -104,20 +109,27 @@ export function PartnerCard({
       </div>
       <div className="mt-1 min-h-[1rem] text-xs text-cream/40 italic">{interim && `"${interim}"`}</div>
 
-      <div className="mt-2 flex flex-wrap gap-2">
-        {chips.map((chip) => (
-          <button
-            key={chip}
-            type="button"
-            disabled={!isActive}
-            onClick={() => {
-              const sep = text && !/[\s,]$/.test(text) ? ", " : "";
-              onTextChange(text + sep + chip, "typed");
-            }}
-            className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors enabled:hover:text-cream disabled:opacity-40"
-          >
-            {chip}
-          </button>
+      <div className="mt-3 space-y-2">
+        {chipGroups.map((group) => (
+          <div key={group.label}>
+            <p className="mb-1 text-[10px] font-medium tracking-wide text-cream/35 uppercase">{group.label}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {group.chips.map((chip) => (
+                <button
+                  key={chip}
+                  type="button"
+                  disabled={!isActive}
+                  onClick={() => {
+                    const sep = text && !/[\s,]$/.test(text) ? ", " : "";
+                    onTextChange(text + sep + chip, "typed");
+                  }}
+                  className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors enabled:hover:text-cream disabled:opacity-40"
+                >
+                  {chip}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
     </div>

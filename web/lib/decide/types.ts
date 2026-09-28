@@ -33,7 +33,7 @@ export interface Candidate {
     spice: "hot" | "mild";
     setting: "patio" | "indoor";
     price: "low" | "mid" | "high";
-    diet: "vegan" | "halal" | "gluten_free" | "none";
+    diet: "vegan" | "vegetarian" | "halal" | "gluten_free" | "none";
   };
   color: string;
 }

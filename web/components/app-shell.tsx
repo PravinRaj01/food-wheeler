@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Compass, History, LogIn, LogOut, Settings2, UtensilsCrossed } from "lucide-react";
+import { Compass, History, LogIn, LogOut, Settings2, UtensilsCrossed, WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/logo";
+import { useOnline } from "@/lib/hooks/use-online";
 import { signOutAction } from "@/app/auth/actions";
 
 export function AppShell({ children, signedIn }: { children: React.ReactNode; signedIn: boolean }) {
   const pathname = usePathname();
+  const isOnline = useOnline();
 
   // History requires a login (see lib/auth.config.ts), so guests don't get
   // a link that would just bounce them to /login - they get a Login link
@@ -36,6 +38,12 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
           <span className="font-display text-base font-semibold tracking-tight">Food Wheeler</span>
         </Link>
       </header>
+
+      {!isOnline && (
+        <div role="status" className="flex items-center justify-center gap-1.5 bg-black/30 py-1.5 text-xs text-cream/70">
+          <WifiOff className="h-3.5 w-3.5" /> You&apos;re offline — showing what&apos;s cached
+        </div>
+      )}
 
       <div className="flex flex-1">
         {/* Desktop sidebar */}

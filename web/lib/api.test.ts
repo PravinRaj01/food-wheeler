@@ -80,6 +80,29 @@ describe("decide", () => {
     expect(result).toEqual({ status: "error", code: "BAD_REQUEST" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("passes an abort signal to fetch, so a hung request can't spin the deciding animation forever", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "match" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await decide({} as Parameters<typeof decide>[0]);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal.aborted).toBe(false);
+  });
+
+  it("aborts if the caller's own signal aborts, not just on the internal timeout", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "match" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    controller.abort();
+    await decide({} as Parameters<typeof decide>[0], controller.signal);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal.aborted).toBe(true);
+  });
 });
 
 describe("listEngines", () => {

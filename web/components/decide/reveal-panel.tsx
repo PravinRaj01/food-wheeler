@@ -13,6 +13,8 @@ const RevealMap = dynamic(() => import("@/components/decide/reveal-map").then((m
 
 export function RevealPanel({
   response,
+  p1Name,
+  p2Name,
   p1Text,
   p2Text,
   userLocation,
@@ -20,6 +22,8 @@ export function RevealPanel({
   onStartOver,
 }: {
   response: MatchResponse;
+  p1Name: string;
+  p2Name: string;
   p1Text: string;
   p2Text: string;
   userLocation: Location | null;
@@ -47,7 +51,14 @@ export function RevealPanel({
       transition={{ type: "spring", bounce: 0.3, duration: 0.6 }}
       className="glass rounded-2xl p-6"
     >
-      <p className="mb-2 text-[11px] tracking-[0.15em] text-cream/40 uppercase">Tonight&apos;s table</p>
+      <div className="mb-2 flex items-center gap-2">
+        <p className="text-[11px] tracking-[0.15em] text-cream/40 uppercase">Tonight&apos;s table</p>
+        {response.source === "mock" && (
+          <span className="rounded-full bg-black/25 px-2 py-0.5 text-[10px] font-medium tracking-wide text-cream/50 uppercase">
+            Demo places
+          </span>
+        )}
+      </div>
       <div className="mb-1 flex items-start justify-between gap-3">
         <h2 className="font-display text-2xl leading-tight text-cream">{w.name}</h2>
         <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--ember)_18%,transparent)] px-2.5 py-1 text-[11px] font-medium whitespace-nowrap text-ember">
@@ -67,7 +78,9 @@ export function RevealPanel({
       </div>
       {(p1Hit || p2Hit) && (
         <div className="mb-4 text-xs text-cream/40">
-          {[p1Hit && `Partner One got: ${p1Hit}`, p2Hit && `Partner Two got: ${p2Hit}`].filter(Boolean).join("   ·   ")}
+          {[p1Hit && `${p1Name || "Partner One"} got: ${p1Hit}`, p2Hit && `${p2Name || "Partner Two"} got: ${p2Hit}`]
+            .filter(Boolean)
+            .join("   ·   ")}
         </div>
       )}
 

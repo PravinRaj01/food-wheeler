@@ -1,12 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import Link from "next/link";
 import { AnimatePresence } from "motion/react";
 import { MapPin } from "lucide-react";
 import { decideReducer, initialState } from "@/lib/decide/machine";
+import type { SessionSnapshot } from "@/lib/decide/machine";
 import { decide, listEngines, warmEngine } from "@/lib/api";
 import type { Candidate, DecideRequest, EngineId, EngineListItem } from "@/lib/decide/types";
-import { useGeolocation } from "@/lib/hooks/use-geolocation";
+import { useLocation } from "@/lib/location/location-provider";
+import { useOnline } from "@/lib/hooks/use-online";
 import { useToast } from "@/lib/hooks/use-toast";
 import { isDevModeEnabled } from "@/lib/dev-mode";
 import { local, session } from "@/lib/safe-storage";
@@ -17,38 +20,45 @@ import { PartnerCard } from "@/components/decide/partner-card";
 import { EngineToggle } from "@/components/decide/engine-toggle";
 import { RadiusSlider } from "@/components/decide/radius-slider";
 import { HandoffScreen } from "@/components/decide/handoff-screen";
+import { NamesStep } from "@/components/decide/names-step";
 import { DecidingSequence } from "@/components/decide/deciding-sequence";
+import { LocationPrompt } from "@/components/decide/location-prompt";
 import { Wheel, slicesFromRanking } from "@/components/decide/wheel";
 import { MediatorPanel } from "@/components/decide/mediator-panel";
 import { RevealPanel } from "@/components/decide/reveal-panel";
 
 const SEED_KEY = "fw_seeded_candidates";
+const NAMES_KEY = "fw_names";
+const NAMES_SKIPPED_KEY = "fw_names_skipped";
+const SESSION_KEY = "fw_session";
 
-const P1_CHIPS = ["Spicy", "Outdoor patio", "Under $30", "Vegan-friendly"];
-const P2_CHIPS = ["Casual", "No burgers", "Halal", "Gluten-free"];
+// Shown identically to both partners - each chip either becomes visible
+// text the engine reads (Craving/Mood/Heat/Budget) or trips a hard guard in
+// apply_guards() (app.py): Budget/Treat ourselves match the budget-tier
+// regexes, Halal/Vegetarian match the diet patterns, and the Nope group's
+// "No X" phrasing matches the exclusion regex the same way free-typed text
+// already does.
+const CHIP_GROUPS = [
+  { label: "Craving", chips: ["Malay", "Chinese", "Indian", "Japanese", "Korean", "Thai", "Western"] },
+  { label: "Mood", chips: ["Quick bite", "Sit-down"] },
+  { label: "Heat", chips: ["Spicy", "Mild"] },
+  { label: "Budget", chips: ["Budget", "Mid-range", "Treat ourselves"] },
+  { label: "Must", chips: ["Halal", "Vegetarian"] },
+  { label: "Nope", chips: ["No seafood", "No fast food"] },
+];
 
 export default function DecidePage() {
   const [state, dispatch] = useReducer(decideReducer, undefined, () => initialState("laya", false));
   const [engines, setEngines] = useState<EngineListItem[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
-  const geo = useGeolocation();
+  const [locationPromptOpen, setLocationPromptOpen] = useState(false);
+  const loc = useLocation();
+  const isOnline = useOnline();
   const { toasts, toast } = useToast();
 
   useEffect(() => {
     getCurrentUserId().then(setUserId).catch(() => setUserId(null));
   }, []);
-
-  // "denied" covers an explicit no, an unsupported browser, AND our own
-  // GEO_TIMEOUT_MS backstop (use-geolocation.ts) for a permission prompt
-  // the user never answered - all three look identical to the app, and all
-  // three mean the same thing: nudge them toward demo mode's real cause
-  // instead of leaving "Locating…" looking stuck with no explanation.
-  useEffect(() => {
-    if (geo.status === "denied") {
-      toast("Location is off, so we're showing demo places nearby. Turn on location access for your browser to see real ones.");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geo.status]);
 
   // Save every reveal to the local-first outbox (see lib/sync/outbox.ts) -
   // guests get it too (ownerId: null), claimed automatically on their next
@@ -88,6 +98,56 @@ export default function DecidePage() {
     if (storedEngine !== "laya") dispatch({ type: "SET_ENGINE", engine: storedEngine });
     if (isDevModeEnabled()) dispatch({ type: "SET_DEV_MODE", value: true });
 
+    // Resuming an interrupted round (a reload or a backgrounded PWA
+    // reopened) takes priority over the plain names restore below, since
+    // the snapshot already carries whatever names were in play plus
+    // in-progress text - see the persistence effect further down for the
+    // write side and what "resumable" means.
+    const sessionRaw = session.get(SESSION_KEY, "");
+    let restoredSession = false;
+    if (sessionRaw) {
+      try {
+        const snapshot = JSON.parse(sessionRaw) as SessionSnapshot;
+        if (snapshot && (snapshot.phase === "names" || snapshot.phase === "p1" || snapshot.phase === "p2")) {
+          dispatch({ type: "RESTORE_SESSION", snapshot });
+          restoredSession = true;
+        }
+      } catch {
+        /* malformed - ignore, fall through to the plain names restore */
+      }
+    }
+
+    // Names are asked once, ever, per browser (see components/decide/
+    // names-step.tsx) - a returning visitor is skipped straight past the
+    // "names" phase that initialState() always starts in. Saved-but-emptied
+    // names (cleared from Settings) count as skipped too, same as never
+    // having answered the prompt at all.
+    if (!restoredSession) {
+      const namesRaw = local.get(NAMES_KEY, "");
+      let p1Name = "";
+      let p2Name = "";
+      if (namesRaw) {
+        try {
+          const parsed = JSON.parse(namesRaw) as { p1?: string; p2?: string };
+          p1Name = parsed.p1 || "";
+          p2Name = parsed.p2 || "";
+        } catch {
+          /* malformed - treat as unset */
+        }
+      }
+      if (p1Name || p2Name) {
+        dispatch({ type: "SET_NAMES", p1Name, p2Name });
+      } else if (namesRaw || local.get(NAMES_SKIPPED_KEY, "0") === "1") {
+        dispatch({ type: "SKIP_NAMES" });
+      } else {
+        // A genuinely first-ever visit: nothing to restore, but the
+        // persistence write effect below still needs to know the restore
+        // attempt has run (see hydrated's doc comment in machine.ts) before
+        // it's safe to start writing.
+        dispatch({ type: "MARK_HYDRATED" });
+      }
+    }
+
     // One-time handoff from Explore's "Add to tonight's wheel" - see
     // components/explore/place-card.tsx for the write side.
     const raw = session.get(SEED_KEY, "");
@@ -109,6 +169,52 @@ export default function DecidePage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep an in-progress round alive across a reload or the PWA being
+  // backgrounded and killed - only while it's actually resumable (names/p1/
+  // p2; wheel/mediator/reveal all depend on a live server response that was
+  // never persisted, so there's nothing safe to restore into once past p2).
+  //
+  // Gated on `state.hydrated`, not just checked inline: without it, this
+  // effect's very first run (before the mount-restore effect's dispatch
+  // above has been applied to a render) would write the untouched DEFAULT
+  // state - names/p1/p2 all blank - and clobber a real saved snapshot with
+  // blanks a moment before the restore could ever read it. Gating on state
+  // (set by the SAME dispatches the restore effect already uses) rather
+  // than a ref means this can't fire on that pre-restore render no matter
+  // how these two effects happen to interleave.
+  useEffect(() => {
+    if (!state.hydrated) return;
+    if (state.phase !== "names" && state.phase !== "p1" && state.phase !== "p2") return;
+    const snapshot: SessionSnapshot = {
+      phase: state.phase,
+      p1Name: state.p1Name,
+      p2Name: state.p2Name,
+      p1Text: state.p1Text,
+      p1Mode: state.p1Mode,
+      p2Text: state.p2Text,
+      p2Mode: state.p2Mode,
+      radiusKm: state.radiusKm,
+    };
+    session.set(SESSION_KEY, JSON.stringify(snapshot));
+  }, [
+    state.hydrated,
+    state.phase,
+    state.p1Name,
+    state.p2Name,
+    state.p1Text,
+    state.p1Mode,
+    state.p2Text,
+    state.p2Mode,
+    state.radiusKm,
+  ]);
+
+  // Reaching reveal means the round is done - clear the snapshot so
+  // reopening the app later starts fresh instead of resuming a completed
+  // round's half-finished-looking leftovers.
+  useEffect(() => {
+    if (state.phase === "reveal") session.set(SESSION_KEY, "");
+  }, [state.phase]);
 
   useEffect(() => {
     listEngines()
@@ -141,15 +247,22 @@ export default function DecidePage() {
     }
   };
 
+  // A fast double-tap on "Find Our Table" could otherwise fire two requests
+  // before the re-render that hides the button lands - this closes that gap
+  // regardless of render timing.
+  const submittingRef = useRef(false);
+
   const submit = useCallback(
     async (overrides?: { tiebreakers?: typeof state.tiebreakers; round?: number }) => {
+      if (submittingRef.current) return;
+      submittingRef.current = true;
       dispatch({ type: "SUBMIT_START" });
       const body: DecideRequest = {
         engine: state.engine,
         dev_mode: state.devMode,
         partner1: { text: state.p1Text.trim(), input_mode: state.p1Mode },
         partner2: { text: state.p2Text.trim(), input_mode: state.p2Mode },
-        location: geo.location,
+        location: loc.location,
         candidates: state.candidates,
         source: state.source,
         tiebreakers: overrides?.tiebreakers ?? state.tiebreakers,
@@ -164,14 +277,33 @@ export default function DecidePage() {
           toast(res.message || "Something went wrong.");
           dispatch({ type: "SUBMIT_ERROR", message: res.message });
         }
-      } catch {
-        toast("Could not reach the server. Check your connection and try again.");
+      } catch (err) {
+        const timedOut = err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError");
+        toast(
+          timedOut
+            ? "That's taking too long - your third wheel might be waking up. Try again in a moment."
+            : "Could not reach the server. Check your connection and try again.",
+        );
         dispatch({ type: "SUBMIT_ERROR", message: "network" });
+      } finally {
+        submittingRef.current = false;
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.engine, state.devMode, state.p1Text, state.p1Mode, state.p2Text, state.p2Mode, geo.location, state.candidates, state.source, state.tiebreakers, state.round, state.radiusKm],
+    [state.engine, state.devMode, state.p1Text, state.p1Mode, state.p2Text, state.p2Mode, loc.location, state.candidates, state.source, state.tiebreakers, state.round, state.radiusKm],
   );
+
+  // "Find Our Table" goes through here first: a real location is worth a
+  // deliberate ask (the drawer), not a silent demo-mode fallback the couple
+  // never finds out about. Already granted (or already declined this round
+  // via the drawer) skips straight to submit().
+  const findTable = () => {
+    if (loc.enabled && (loc.status === "granted" || loc.status === "locating")) {
+      submit();
+      return;
+    }
+    setLocationPromptOpen(true);
+  };
 
   const resetGame = () => dispatch({ type: "RESET" });
 
@@ -188,19 +320,13 @@ export default function DecidePage() {
             Food Wheeler{state.devMode && <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] tracking-wide text-cream/50 uppercase">Dev</span>}
           </h1>
         </div>
-        <button
-          type="button"
-          onClick={geo.request}
-          className="mt-3 flex items-center gap-1.5 rounded-full bg-glass px-3 py-1.5 text-xs text-cream/60"
+        <Link
+          href="/settings"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-glass px-3 py-1.5 text-xs text-cream/60"
         >
           <MapPin className="h-3.5 w-3.5" />
-          {geo.status === "locating" ? "Locating…" : geo.status === "granted" ? "Near you" : geo.status === "denied" ? "Demo location" : "Use my location"}
-        </button>
-        {geo.status === "denied" && (
-          <p className="mt-1.5 text-[11px] text-cream/40">
-            Turn on location access in your browser or device settings, then tap this to try again.
-          </p>
-        )}
+          {loc.status === "granted" ? "Near you" : loc.status === "locating" ? "Locating…" : "Demo places"}
+        </Link>
 
         {(state.phase === "p1" || state.phase === "p2") && (
           <div className="mt-4">
@@ -214,26 +340,34 @@ export default function DecidePage() {
       </header>
 
       <AnimatePresence mode="wait">
+        {state.phase === "names" && (
+          <NamesStep
+            key="names"
+            onContinue={(p1Name, p2Name) => dispatch({ type: "SET_NAMES", p1Name, p2Name })}
+            onSkip={() => dispatch({ type: "SKIP_NAMES" })}
+          />
+        )}
+
         {(state.phase === "p1" || state.phase === "p2") && (
           <div key="input" className="space-y-4">
             <PartnerCard
               number={1}
-              label="Partner One"
+              label={state.p1Name || "Partner One"}
               text={state.p1Text}
               onTextChange={(text, mode) => dispatch({ type: "SET_P1_TEXT", text, mode })}
               placeholder="Spicy, under $30, somewhere close…"
-              chips={P1_CHIPS}
+              chipGroups={CHIP_GROUPS}
               state={state.phase === "p1" ? "active" : "locked"}
               accentVar="--p1"
               onSpeechError={toast}
             />
             <PartnerCard
               number={2}
-              label="Partner Two"
+              label={state.p2Name || "Partner Two"}
               text={state.p2Text}
               onTextChange={(text, mode) => dispatch({ type: "SET_P2_TEXT", text, mode })}
               placeholder="Casual, a patio if possible, no burgers…"
-              chips={P2_CHIPS}
+              chipGroups={CHIP_GROUPS}
               state={state.phase === "p2" ? "active" : "waiting"}
               accentVar="--p2"
               onSpeechError={toast}
@@ -245,23 +379,28 @@ export default function DecidePage() {
                 onClick={() => dispatch({ type: "PASS_TO_P2" })}
                 className="w-full rounded-xl bg-ember py-3 text-sm font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-35"
               >
-                Pass to Partner Two
+                Pass to {state.p2Name || "Partner Two"}
               </button>
             ) : (
-              <button
-                type="button"
-                disabled={!state.p1Text.trim() && !state.p2Text.trim()}
-                onClick={() => submit()}
-                className="w-full rounded-xl bg-ember py-3 text-base font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                Find Our Table
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled={(!state.p1Text.trim() && !state.p2Text.trim()) || !isOnline}
+                  onClick={findTable}
+                  className="w-full rounded-xl bg-ember py-3 text-base font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  Find Our Table
+                </button>
+                {!isOnline && (
+                  <p className="text-center text-xs text-cream/40">You&apos;re offline - reconnect to ask your third wheel.</p>
+                )}
+              </>
             )}
           </div>
         )}
 
         {state.phase === "handoff" && (
-          <HandoffScreen key="handoff" onDone={() => dispatch({ type: "HANDOFF_DONE" })} />
+          <HandoffScreen key="handoff" p2Name={state.p2Name} onReady={() => dispatch({ type: "HANDOFF_DONE" })} />
         )}
 
         {state.phase === "submitting" && <DecidingSequence key="submitting" />}
@@ -299,14 +438,31 @@ export default function DecidePage() {
           <RevealPanel
             key="reveal"
             response={state.lastMatch}
+            p1Name={state.p1Name}
+            p2Name={state.p2Name}
             p1Text={state.p1Text}
             p2Text={state.p2Text}
-            userLocation={geo.location}
+            userLocation={loc.location}
             devMode={state.devMode}
             onStartOver={resetGame}
           />
         )}
       </AnimatePresence>
+
+      <LocationPrompt
+        open={locationPromptOpen}
+        status={loc.status}
+        onOpenChange={setLocationPromptOpen}
+        onEnable={async () => {
+          setLocationPromptOpen(false);
+          await loc.enable();
+          submit();
+        }}
+        onUseDemoPlaces={() => {
+          setLocationPromptOpen(false);
+          submit();
+        }}
+      />
     </div>
   );
 }

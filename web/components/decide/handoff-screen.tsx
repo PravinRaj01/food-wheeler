@@ -1,24 +1,32 @@
 "use client";
 
-import { useEffect } from "react";
 import { motion } from "motion/react";
 import { Smartphone } from "lucide-react";
 
-export function HandoffScreen({ onDone, durationMs = 900 }: { onDone: () => void; durationMs?: number }) {
-  useEffect(() => {
-    const id = setTimeout(onDone, durationMs);
-    return () => clearTimeout(id);
-  }, [onDone, durationMs]);
+/** A real handoff, not a timed auto-advance - Partner Two has to actually
+ * tap "ready" before their own input phase starts, so this genuinely
+ * covers Partner One's answer changing hands rather than just pausing for
+ * a second. */
+export function HandoffScreen({ p2Name, onReady }: { p2Name: string; onReady: () => void }) {
+  const label = p2Name || "Partner Two";
 
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-[var(--orange-3)] text-center"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-[var(--orange-3)] p-6 text-center"
     >
       <Smartphone className="h-10 w-10 text-cream/70" />
-      <p className="font-display text-xl text-cream">Hand the phone to Partner Two</p>
+      <p className="font-display text-xl text-cream">Pass it to {label}</p>
+      <p className="text-sm text-cream/50">No peeking at what was just typed.</p>
+      <button
+        type="button"
+        onClick={onReady}
+        className="mt-4 rounded-xl bg-ember px-8 py-3 text-sm font-medium text-ink transition-opacity hover:opacity-90"
+      >
+        I&apos;m {label} — ready
+      </button>
     </motion.div>
   );
 }

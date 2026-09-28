@@ -61,7 +61,7 @@ def test_radius_params_scale_up_with_distance():
 
     assert small["timeout_s"] <= mid["timeout_s"] <= large["timeout_s"] <= huge["timeout_s"]
     assert small["result_cap"] <= mid["result_cap"] <= large["result_cap"] <= huge["result_cap"]
-    assert huge["timeout_s"] <= 15  # capped, not unbounded
+    assert huge["timeout_s"] <= 25  # capped, not unbounded
     assert huge["result_cap"] <= 600  # capped, not unbounded
 
 
@@ -146,9 +146,61 @@ def test_large_radius_does_not_retry_wider_on_sparse_results():
         cands, source = candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=15)
 
     # Past WIDEN_THRESHOLD_KM there's no second, wider attempt - a sparse
-    # result at 15km means a sparse area, not a bad first guess.
+    # result at 15km means a sparse area, not a bad first guess. The 2 real
+    # results found are still returned, not swapped for mock data - a real
+    # location never silently falls back to demo places.
     assert call_radii == [15000]
-    assert source == "mock"  # too few real results and nowhere wider to try
+    assert source == "osm"
+    assert len(cands) == 2
+
+
+def test_get_candidates_raises_when_every_endpoint_fails():
+    with patch.object(candidates, "_fetch_overpass", return_value=None):
+        with pytest.raises(candidates.PlacesUnavailable) as exc_info:
+            candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+    assert exc_info.value.kind == "fetch"
+
+
+def test_get_candidates_raises_when_real_fetch_is_empty():
+    with patch.object(candidates, "_fetch_overpass", return_value=[]):
+        with pytest.raises(candidates.PlacesUnavailable) as exc_info:
+            candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+    assert exc_info.value.kind == "empty"
+
+
+def test_get_candidates_never_raises_with_no_location():
+    # No location at all means demo mode - PlacesUnavailable is only ever
+    # for a REAL location that came up empty.
+    cands, source = candidates.get_candidates(None, radius_km=5)
+    assert source == "mock"
+    assert len(cands) == len(candidates.MOCK_RESTAURANTS)
+
+
+def test_get_candidates_filters_out_of_radius_results():
+    # Overpass's own `around` filter should already enforce this server
+    # side, but the defensive client-side filter must catch a stray result
+    # outside the requested radius too - this is the exact bug that put a
+    # "15317 km away" mock result in front of a real user.
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap):
+        return [_fake_place("near", 2.0), _fake_place("far", 200.0)]
+
+    with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch):
+        cands, source = candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+    assert [c["id"] for c in cands] == ["near"]
+
+
+def test_list_places_raises_when_every_endpoint_fails():
+    with patch.object(candidates, "_fetch_overpass", return_value=None):
+        with pytest.raises(candidates.PlacesUnavailable) as exc_info:
+            candidates.list_places({"lat": 1, "lng": 1}, radius_km=5)
+    assert exc_info.value.kind == "fetch"
+
+
+def test_list_places_raises_when_real_fetch_is_empty():
+    with patch.object(candidates, "_fetch_overpass", return_value=[]):
+        with pytest.raises(candidates.PlacesUnavailable) as exc_info:
+            candidates.list_places({"lat": 1, "lng": 1}, radius_km=5)
+    assert exc_info.value.kind == "empty"
 
 
 def test_roadtrip_stratifies_across_distance_rings():
@@ -171,20 +223,24 @@ def test_list_places_filters_by_cuisine_and_diet():
     ]
     results[1]["dims"]["diet"] = "halal"
 
+    # radius_km=5 so the within-radius filter doesn't clip any of the fake
+    # 1-3km distances before cuisine/diet filtering runs.
     with patch.object(candidates, "_fetch_for_radius", return_value=results):
-        places, source = candidates.list_places({"lat": 1, "lng": 1}, cuisine="thai")
+        places, source = candidates.list_places({"lat": 1, "lng": 1}, radius_km=5, cuisine="thai")
     assert [p["id"] for p in places] == ["thai1"]
 
     with patch.object(candidates, "_fetch_for_radius", return_value=results):
-        places, source = candidates.list_places({"lat": 1, "lng": 1}, diet="halal")
+        places, source = candidates.list_places({"lat": 1, "lng": 1}, radius_km=5, diet="halal")
     assert [p["id"] for p in places] == ["mex1"]
 
 
-def test_list_places_falls_back_to_mock_on_sparse_results():
+def test_list_places_returns_real_results_even_when_sparse():
+    # A single real nearby place is still real - it must never be swapped
+    # for the mock set just because it's the only one found.
     with patch.object(candidates, "_fetch_for_radius", return_value=[_fake_place("only-one", 0.1)]):
         places, source = candidates.list_places({"lat": 1, "lng": 1})
-    assert source == "mock"
-    assert len(places) == len(candidates.MOCK_RESTAURANTS)
+    assert source == "osm"
+    assert [p["id"] for p in places] == ["only-one"]
 
 
 def test_list_places_respects_limit():
@@ -226,15 +282,40 @@ def test_places_route_without_location_uses_mock(client):
 
 
 def test_places_route_rejects_garbage_radius_gracefully(client):
-    resp = client.get("/api/places?lat=1&lng=1&radius_km=not-a-number")
+    # Mocked so this only tests radius parsing, not live Overpass behavior
+    # for lat=1/lng=1 (open ocean) - that coupling was incidental and made
+    # the test depend on real network access.
+    with patch("app.list_places", return_value=([], "mock")) as mock_list:
+        resp = client.get("/api/places?lat=1&lng=1&radius_km=not-a-number")
     assert resp.status_code == 200
     assert resp.get_json()["radius_km"] == candidates.DEFAULT_RADIUS_KM
+    assert mock_list.call_args.kwargs["radius_km"] == candidates.DEFAULT_RADIUS_KM
 
 
 def test_places_route_clamps_an_out_of_range_radius(client):
-    resp = client.get("/api/places?lat=1&lng=1&radius_km=9999")
+    with patch("app.list_places", return_value=([], "mock")) as mock_list:
+        resp = client.get("/api/places?lat=1&lng=1&radius_km=9999")
     assert resp.status_code == 200
     assert resp.get_json()["radius_km"] == candidates.RADIUS_KM_MAX
+    assert mock_list.call_args.kwargs["radius_km"] == candidates.RADIUS_KM_MAX
+
+
+def test_places_route_returns_503_on_fetch_failure(client):
+    with patch("app.list_places", side_effect=candidates.PlacesUnavailable("fetch")):
+        resp = client.get("/api/places?lat=1&lng=1&radius_km=5")
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data["status"] == "error"
+    assert data["code"] == "PLACES_UNAVAILABLE"
+
+
+def test_places_route_returns_no_places_nearby_when_empty(client):
+    with patch("app.list_places", side_effect=candidates.PlacesUnavailable("empty")):
+        resp = client.get("/api/places?lat=1&lng=1&radius_km=5")
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data["status"] == "error"
+    assert data["code"] == "NO_PLACES_NEARBY"
 
 
 def test_decide_passes_radius_km_through(client):

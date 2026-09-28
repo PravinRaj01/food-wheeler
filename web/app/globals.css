@@ -91,6 +91,42 @@ body {
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
 
+/* Native app feel, not a website-in-a-frame feel. */
+body {
+  overscroll-behavior: none; /* no rubber-band-into-white-background on iOS */
+  -webkit-tap-highlight-color: transparent; /* Android's grey tap flash */
+}
+button,
+a,
+[role="button"] {
+  touch-action: manipulation; /* skip the ~300ms double-tap-zoom delay */
+}
+/* Tappable chrome shouldn't show a text-selection handle on a long-press -
+   deliberately NOT applied to inputs/textareas/headlines/body copy, which
+   should stay selectable. */
+nav,
+button,
+[role="button"] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* iOS Safari zooms the whole viewport on focusing any input under 16px -
+   !important because Tailwind's own text-sm utility classes (used
+   throughout for the compact card inputs) would otherwise win on
+   specificity alone. Desktop keeps the smaller, intentional size. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+/* One rule covers every primary (ember) button's press feedback instead of
+   an active:scale-* class hand-added to each one. */
+.bg-ember:active {
+  transform: scale(0.98);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;

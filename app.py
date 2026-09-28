@@ -31,7 +31,10 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from flask import Flask, jsonify, request
 
-from candidates import DEFAULT_RADIUS_KM, PRICE_TIER_MAX, clamp_radius_km, get_candidates, list_places, with_colors
+from candidates import (
+    DEFAULT_RADIUS_KM, PRICE_TIER_MAX, PlacesUnavailable, clamp_radius_km,
+    get_candidates, list_places, with_colors,
+)
 from engines import (
     EngineManager,
     EngineScoreError,
@@ -182,6 +185,7 @@ DIMENSION_VALUES = {
     },
     "diet": {
         "vegan": {"label": "Vegan-friendly", "emoji": "🌱", "text": "Needs to be vegan-friendly"},
+        "vegetarian": {"label": "Vegetarian", "emoji": "🥗", "text": "Needs to be vegetarian"},
         "halal": {"label": "Halal", "emoji": "🥙", "text": "Needs to be halal"},
         "gluten_free": {"label": "Gluten-free", "emoji": "🌾", "text": "Needs to be gluten-free"},
         "none": {"label": "No restrictions", "emoji": "🍖", "text": "No dietary restrictions"},
@@ -225,11 +229,20 @@ def build_mediator_question(top1: dict, top2: dict, asked_ids: set[str]) -> dict
 # exclusions, budgets and diet requirements can't be overridden by a model).
 # ---------------------------------------------------------------------------
 _EXCLUSION_RE = re.compile(r"\b(?:no|not|avoid|without)\s+([a-z]+(?:\s[a-z]+)?)", re.IGNORECASE)
-_BUDGET_RE = re.compile(r"(?:under|below|less than)\s*\$?\s*(\d+)", re.IGNORECASE)
+# Currency-aware: "under $30", "under RM30" and "under 30 MYR" (or MYR/RM
+# before the number) all match. The symbol/code is optional either side of
+# the number so plain "under 30" still works too.
+_BUDGET_RE = re.compile(
+    r"(?:under|below|less than)\s*(?:rm|myr|\$)?\s*(\d+)\s*(?:rm|myr)?", re.IGNORECASE
+)
+# Tier keywords for when no number is given at all.
+_BUDGET_LOW_RE = re.compile(r"\b(?:budget|cheap|inexpensive)\b", re.IGNORECASE)
+_BUDGET_HIGH_RE = re.compile(r"\b(?:treat|fancy|splurge|upscale)\b", re.IGNORECASE)
 _EXCLUSION_STOPWORDS = {"please", "thanks", "really", "very", "so", "too", "any", "more"}
 _NEGATION_WORDS = {"no", "not", "avoid", "without"}
 _DIET_PATTERNS = [
     ("vegan", re.compile(r"\bvegan\b")),
+    ("vegetarian", re.compile(r"\bvegetarian\b")),
     ("halal", re.compile(r"\bhalal\b")),
     ("gluten_free", re.compile(r"\bgluten[\s-]?free\b")),
 ]
@@ -262,6 +275,19 @@ def apply_guards(combined_text: str, cands: list[dict]) -> tuple[list[dict], set
         by_budget = [c for c in filtered if PRICE_TIER_MAX.get(c["price"].lstrip("~"), 999) <= budget]
         if by_budget:
             filtered = by_budget
+    elif _BUDGET_LOW_RE.search(text_lower):
+        # "budget"/"cheap" with no number given - restrict to the low tier,
+        # same intent as a strict numeric budget.
+        by_budget = [c for c in filtered if c.get("dims", {}).get("price") == "low"]
+        if by_budget:
+            filtered = by_budget
+    elif _BUDGET_HIGH_RE.search(text_lower):
+        # "treat ourselves"/"splurge" - the opposite signal: rule out the
+        # cheapest tier rather than cap anything, so a request to splurge
+        # doesn't get answered with the nearest fast-food counter.
+        by_budget = [c for c in filtered if c.get("dims", {}).get("price") != "low"]
+        if by_budget:
+            filtered = by_budget
 
     exclusions = set()
     for m in _EXCLUSION_RE.finditer(text_lower):
@@ -290,6 +316,24 @@ def apply_guards(combined_text: str, cands: list[dict]) -> tuple[list[dict], set
         # it even though nothing can be guaranteed to satisfy it.
 
     return (filtered if filtered else cands), exclusions
+
+
+# ---------------------------------------------------------------------------
+# PlacesUnavailable -> HTTP response. Shared by /api/decide and /api/places
+# so a real-location fetch failure or an empty radius reads the same way on
+# both - neither ever falls back to silently returning the mock set, which
+# is what previously put NYC restaurants "15,317 km" from a real user.
+# ---------------------------------------------------------------------------
+def _places_unavailable_response(exc: PlacesUnavailable, radius_km: float):
+    if exc.kind == "empty":
+        return jsonify({
+            "status": "error", "code": "NO_PLACES_NEARBY",
+            "message": f"No restaurants found within {radius_km:g} km — try a bigger radius.",
+        }), 503
+    return jsonify({
+        "status": "error", "code": "PLACES_UNAVAILABLE",
+        "message": "Couldn't load nearby restaurants right now — try again or a smaller radius.",
+    }), 503
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +588,10 @@ def places_route():
     cuisine = request.args.get("cuisine") or None
     diet = request.args.get("diet") or None
 
-    places, source = list_places(location, radius_km=radius_km, cuisine=cuisine, diet=diet)
+    try:
+        places, source = list_places(location, radius_km=radius_km, cuisine=cuisine, diet=diet)
+    except PlacesUnavailable as exc:
+        return _places_unavailable_response(exc, radius_km)
     return jsonify({"places": places, "source": source, "radius_km": radius_km})
 
 
@@ -577,7 +624,10 @@ def decide():
     if candidates_in:
         cands, source = candidates_in, source_in or "osm"
     else:
-        cands, source = get_candidates(location, radius_km=radius_km)
+        try:
+            cands, source = get_candidates(location, radius_km=radius_km)
+        except PlacesUnavailable as exc:
+            return _places_unavailable_response(exc, radius_km)
     cands = with_colors(cands)
 
     combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])

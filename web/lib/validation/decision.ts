@@ -19,7 +19,7 @@ const candidateSchema = z.object({
     spice: z.enum(["hot", "mild"]),
     setting: z.enum(["patio", "indoor"]),
     price: z.enum(["low", "mid", "high"]),
-    diet: z.enum(["vegan", "halal", "gluten_free", "none"]),
+    diet: z.enum(["vegan", "vegetarian", "halal", "gluten_free", "none"]),
   }),
   color: z.string(),
 });

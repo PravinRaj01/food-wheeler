@@ -15,6 +15,12 @@
  *    worker never intercepts cross-origin requests at all), or Next's
  *    RSC/prefetch requests.
  *  - The cached shells are wiped on sign-out (the page posts "clear-pages").
+ *  - A new version installs but stays WAITING rather than taking over
+ *    silently (no skipWaiting() on install) - components/sw-register.tsx
+ *    shows a "New version ready" prompt and only swaps it in once the user
+ *    asks, via a "SKIP_WAITING" message. A brand-new install (no previous
+ *    worker controlling the page yet) is unaffected by this and activates
+ *    immediately either way - only an *update* ever waits.
  */
 
 const BUILD_ID = "__BUILD_ID__";
@@ -22,14 +28,11 @@ const BUILD_ID = "__BUILD_ID__";
 const STATIC = "foodwheeler-static-v1"; // content-hashed files: safe across deploys
 const PAGES = `foodwheeler-pages-${BUILD_ID}`; // HTML shells: replaced every deploy
 
-const SHELL_ROUTES = ["/decide", "/explore"];
+const SHELL_ROUTES = ["/", "/decide", "/explore", "/settings"];
+const OFFLINE_URL = "/offline";
 const STATIC_FILES = new Set(["/icon-192.png", "/icon-512.png", "/maskable-512.png", "/manifest.webmanifest"]);
 const MAX_STATIC_ENTRIES = 200;
 const SLOW_NETWORK_MS = 4000;
-
-self.addEventListener("install", () => {
-  self.skipWaiting();
-});
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
@@ -39,13 +42,14 @@ self.addEventListener("activate", (event) => {
         if (name.startsWith("foodwheeler-") && !keep.has(name)) await caches.delete(name);
       }
       await self.clients.claim();
-      await cachePage("/decide");
+      await Promise.all([...SHELL_ROUTES, OFFLINE_URL].map(cachePage));
     })(),
   );
 });
 
 self.addEventListener("message", (event) => {
   const data = event.data || {};
+  if (data.type === "SKIP_WAITING") self.skipWaiting();
   if (data.type === "clear-pages") event.waitUntil(caches.delete(PAGES));
   if (data.type === "cache-page" && SHELL_ROUTES.includes(data.path)) event.waitUntil(cachePage(data.path));
 });
@@ -106,8 +110,11 @@ async function navigate(event, url) {
   } catch {
     const hit = await cache.match(url.pathname);
     if (hit) return hit;
-    // No cache, no network: let the browser show its own offline page
-    // rather than fake a 200 with nothing useful in it.
+    const offlineHit = await cache.match(OFFLINE_URL);
+    if (offlineHit) return offlineHit;
+    // No cache, no network, not even the offline page cached yet (e.g. the
+    // very first visit happened offline): let the browser show its own
+    // offline page rather than fake a 200 with nothing useful in it.
     return fetch(event.request);
   }
 }

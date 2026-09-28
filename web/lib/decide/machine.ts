@@ -1,15 +1,31 @@
 import { DEFAULT_RADIUS_KM } from "@/lib/decide/types";
-import type { Candidate, EngineId, Location, MatchResponse, Tiebreaker, TiebreakerResponse } from "@/lib/decide/types";
+import type { Candidate, EngineId, MatchResponse, Tiebreaker, TiebreakerResponse } from "@/lib/decide/types";
 
-export type Phase = "p1" | "handoff" | "p2" | "submitting" | "wheel" | "mediator" | "reveal";
+export type Phase = "names" | "p1" | "handoff" | "p2" | "submitting" | "wheel" | "mediator" | "reveal";
+/** The only phases a saved session snapshot can resume into - see
+ * decide/page.tsx's persistence effect. Anything past "p2" depends on a
+ * live server response that was never persisted, so it isn't resumable. */
+export type ResumablePhase = "names" | "p1" | "p2";
 
-export interface DecideState {
-  phase: Phase;
+export interface SessionSnapshot {
+  phase: ResumablePhase;
+  p1Name: string;
+  p2Name: string;
   p1Text: string;
   p1Mode: "typed" | "voice";
   p2Text: string;
   p2Mode: "typed" | "voice";
-  location: Location | null;
+  radiusKm: number;
+}
+
+export interface DecideState {
+  phase: Phase;
+  p1Name: string;
+  p2Name: string;
+  p1Text: string;
+  p1Mode: "typed" | "voice";
+  p2Text: string;
+  p2Mode: "typed" | "voice";
   candidates: Candidate[] | null;
   source: "osm" | "mock" | null;
   tiebreakers: Tiebreaker[];
@@ -21,14 +37,24 @@ export interface DecideState {
   lastMatch: MatchResponse | null;
   lastTiebreaker: TiebreakerResponse | null;
   errorMessage: string | null;
+  /** False until decide/page.tsx's mount effect has attempted a restore
+   * (names and/or an in-progress session snapshot) and dispatched
+   * something - even a no-op MARK_HYDRATED when there was nothing to
+   * restore. The session-persistence write effect gates on this via
+   * state (not a ref or a second piece of component state) specifically
+   * so it can never fire on the pre-restore default render and clobber a
+   * real saved snapshot with blanks before the restore's own dispatch has
+   * had a chance to land - a real race this app hit once already. */
+  hydrated: boolean;
 }
 
 export type Action =
+  | { type: "SET_NAMES"; p1Name: string; p2Name: string }
+  | { type: "SKIP_NAMES" }
   | { type: "SET_P1_TEXT"; text: string; mode?: "typed" | "voice" }
   | { type: "SET_P2_TEXT"; text: string; mode?: "typed" | "voice" }
   | { type: "PASS_TO_P2" }
   | { type: "HANDOFF_DONE" }
-  | { type: "SET_LOCATION"; location: Location | null }
   | { type: "SET_ENGINE"; engine: EngineId }
   | { type: "SET_RADIUS_KM"; km: number }
   | { type: "SEED_CANDIDATES"; candidates: Candidate[]; source: "osm" | "mock" }
@@ -40,16 +66,24 @@ export type Action =
   | { type: "ANSWER_MEDIATOR"; tiebreaker: Tiebreaker }
   | { type: "SPIN_ANYWAY" }
   | { type: "WHEEL_LANDED" }
+  | { type: "RESTORE_SESSION"; snapshot: SessionSnapshot }
+  | { type: "MARK_HYDRATED" }
   | { type: "RESET" };
 
 export function initialState(engine: EngineId, devMode: boolean): DecideState {
   return {
-    phase: "p1",
+    // Always starts here regardless of whether names were set on a
+    // previous visit, so the server and first client render always agree
+    // (see decide/page.tsx's mount effect) - a returning user is skipped
+    // straight past it a moment later via SET_NAMES/SKIP_NAMES, a new one
+    // sees it as the very first thing.
+    phase: "names",
+    p1Name: "",
+    p2Name: "",
     p1Text: "",
     p1Mode: "typed",
     p2Text: "",
     p2Mode: "typed",
-    location: null,
     candidates: null,
     source: null,
     tiebreakers: [],
@@ -61,11 +95,16 @@ export function initialState(engine: EngineId, devMode: boolean): DecideState {
     lastMatch: null,
     lastTiebreaker: null,
     errorMessage: null,
+    hydrated: false,
   };
 }
 
 export function decideReducer(state: DecideState, action: Action): DecideState {
   switch (action.type) {
+    case "SET_NAMES":
+      return { ...state, p1Name: action.p1Name, p2Name: action.p2Name, phase: "p1", hydrated: true };
+    case "SKIP_NAMES":
+      return { ...state, phase: "p1", hydrated: true };
     case "SET_P1_TEXT":
       return { ...state, p1Text: action.text, p1Mode: action.mode ?? state.p1Mode };
     case "SET_P2_TEXT":
@@ -74,8 +113,6 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
       return state.p1Text.trim() ? { ...state, phase: "handoff" } : state;
     case "HANDOFF_DONE":
       return { ...state, phase: "p2" };
-    case "SET_LOCATION":
-      return { ...state, location: action.location };
     case "SET_ENGINE":
       return state.engineLocked ? state : { ...state, engine: action.engine };
     case "SET_RADIUS_KM":
@@ -121,11 +158,20 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
       return { ...state, round: 2 };
     case "WHEEL_LANDED":
       return { ...state, phase: "reveal" };
+    case "RESTORE_SESSION":
+      return { ...state, ...action.snapshot, hydrated: true };
+    case "MARK_HYDRATED":
+      return { ...state, hydrated: true };
     case "RESET":
       return {
         ...initialState(state.engine, state.devMode),
-        location: state.location, // keep location permission and radius
+        // Names were already asked (or skipped) this session - don't send
+        // a couple back through that step for every new round.
+        phase: "p1",
+        p1Name: state.p1Name,
+        p2Name: state.p2Name,
         radiusKm: state.radiusKm, // preference across rounds
+        hydrated: true, // already resolved this session - not a fresh mount
       };
     default:
       return state;

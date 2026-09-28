@@ -46,9 +46,15 @@ const tiebreakerResponse = (overrides: Partial<TiebreakerResponse> = {}): Tiebre
 });
 
 describe("initialState", () => {
-  it("starts on p1 with the given engine and dev mode", () => {
+  it("starts on names (always, regardless of any previous session) with the given engine and dev mode", () => {
+    // Always "names", never "p1" directly - decide/page.tsx's mount effect
+    // is what skips a returning visitor past it via SET_NAMES/SKIP_NAMES,
+    // so the server and the first client render always agree on the
+    // starting phase before that effect has had a chance to run.
     const s = initialState("gliner", true);
-    expect(s.phase).toBe("p1");
+    expect(s.phase).toBe("names");
+    expect(s.p1Name).toBe("");
+    expect(s.p2Name).toBe("");
     expect(s.engine).toBe("gliner");
     expect(s.devMode).toBe(true);
     expect(s.engineLocked).toBe(false);
@@ -57,6 +63,32 @@ describe("initialState", () => {
 });
 
 describe("decideReducer", () => {
+  it("SET_NAMES stores both names, moves to p1, and marks hydrated", () => {
+    const s = decideReducer(initialState("laya", false), { type: "SET_NAMES", p1Name: "Alex", p2Name: "Sam" });
+    expect(s.phase).toBe("p1");
+    expect(s.p1Name).toBe("Alex");
+    expect(s.p2Name).toBe("Sam");
+    expect(s.hydrated).toBe(true);
+  });
+
+  it("SKIP_NAMES moves to p1 without setting either name, and marks hydrated", () => {
+    const s = decideReducer(initialState("laya", false), { type: "SKIP_NAMES" });
+    expect(s.phase).toBe("p1");
+    expect(s.p1Name).toBe("");
+    expect(s.p2Name).toBe("");
+    expect(s.hydrated).toBe(true);
+  });
+
+  it("MARK_HYDRATED only flips the hydrated flag, for a fresh visit with nothing to restore", () => {
+    const s = decideReducer(initialState("laya", false), { type: "MARK_HYDRATED" });
+    expect(s.hydrated).toBe(true);
+    expect(s.phase).toBe("names"); // unlike SET_NAMES/SKIP_NAMES, this doesn't advance the phase
+  });
+
+  it("starts un-hydrated, so the session-persistence write effect knows to wait for a restore attempt", () => {
+    expect(initialState("laya", false).hydrated).toBe(false);
+  });
+
   it("SET_P1_TEXT updates text and input mode", () => {
     const s = decideReducer(initialState("laya", false), { type: "SET_P1_TEXT", text: "spicy", mode: "voice" });
     expect(s.p1Text).toBe("spicy");
@@ -70,18 +102,19 @@ describe("decideReducer", () => {
   });
 
   it("PASS_TO_P2 is a no-op when partner one's text is blank", () => {
-    const s = decideReducer(initialState("laya", false), { type: "PASS_TO_P2" });
+    const start = { ...initialState("laya", false), phase: "p1" as const };
+    const s = decideReducer(start, { type: "PASS_TO_P2" });
     expect(s.phase).toBe("p1");
   });
 
   it("PASS_TO_P2 moves to handoff once partner one has typed something", () => {
-    let s = decideReducer(initialState("laya", false), { type: "SET_P1_TEXT", text: "spicy" });
+    let s = decideReducer({ ...initialState("laya", false), phase: "p1" }, { type: "SET_P1_TEXT", text: "spicy" });
     s = decideReducer(s, { type: "PASS_TO_P2" });
     expect(s.phase).toBe("handoff");
   });
 
   it("PASS_TO_P2 rejects whitespace-only text", () => {
-    let s = decideReducer(initialState("laya", false), { type: "SET_P1_TEXT", text: "   " });
+    let s = decideReducer({ ...initialState("laya", false), phase: "p1" }, { type: "SET_P1_TEXT", text: "   " });
     s = decideReducer(s, { type: "PASS_TO_P2" });
     expect(s.phase).toBe("p1");
   });
@@ -194,27 +227,57 @@ describe("decideReducer", () => {
     expect(s.phase).toBe("reveal");
   });
 
-  it("RESET returns to a fresh p1 state but keeps location and radius tier preferences", () => {
+  it("RESTORE_SESSION overlays a saved snapshot onto the current state", () => {
+    const s = decideReducer(initialState("laya", false), {
+      type: "RESTORE_SESSION",
+      snapshot: {
+        phase: "p2",
+        p1Name: "Alex",
+        p2Name: "Sam",
+        p1Text: "spicy",
+        p1Mode: "voice",
+        p2Text: "",
+        p2Mode: "typed",
+        radiusKm: 5,
+      },
+    });
+    expect(s.phase).toBe("p2");
+    expect(s.p1Name).toBe("Alex");
+    expect(s.p2Name).toBe("Sam");
+    expect(s.p1Text).toBe("spicy");
+    expect(s.p1Mode).toBe("voice");
+    expect(s.radiusKm).toBe(5);
+    // Everything not in the snapshot (engine, devMode, etc.) is untouched.
+    expect(s.engine).toBe("laya");
+    expect(s.hydrated).toBe(true);
+  });
+
+  it("RESET returns to p1 (not names - already asked this session), keeping names and the radius preference", () => {
     const played = {
       ...initialState("laya", true),
       phase: "reveal" as const,
+      p1Name: "Alex",
+      p2Name: "Sam",
       p1Text: "spicy",
       p2Text: "casual",
       engineLocked: true,
-      location: { lat: 1, lng: 2 },
       radiusKm: 15,
       tiebreakers: [{ question_id: "q", answer: "a", text: "A" }],
     };
     const s = decideReducer(played, { type: "RESET" });
     expect(s.phase).toBe("p1");
+    expect(s.p1Name).toBe("Alex");
+    expect(s.p2Name).toBe("Sam");
     expect(s.p1Text).toBe("");
     expect(s.p2Text).toBe("");
     expect(s.engineLocked).toBe(false);
     expect(s.tiebreakers).toEqual([]);
-    expect(s.location).toEqual({ lat: 1, lng: 2 });
     expect(s.radiusKm).toBe(15);
     // devMode and engine survive RESET too, since initialState is seeded from them.
     expect(s.devMode).toBe(true);
+    // Already resolved this session - RESET must not reset this back to
+    // false and re-arm the "wait for a restore attempt" gate for no reason.
+    expect(s.hydrated).toBe(true);
   });
 
   it("ignores unknown action types", () => {
