@@ -10,12 +10,13 @@ pinned: false
 
 # Food Wheeler
 
-Two partners, one phone, one decision. Type or dictate what you each
-want, and a pluggable AI "System 1" decision engine picks a restaurant —
-confidently, or by asking one quick tie-breaker question together. It's
-also a real installable PWA: an app shell with navigation, offline-first
-history sync, and accounts, matching the feel of a native app on both
-desktop and phone.
+Your third wheel for food decisions. Two partners, one phone: type or
+dictate what you each want, and a pluggable AI "System 1" decision engine
+picks a restaurant — confidently, or by stepping in with one quick
+tie-breaker question you answer together. It's also a real installable
+PWA: an app shell with navigation, offline-first history sync, light/dark
+theming, and accounts, matching the feel of a native app on both desktop
+and phone.
 
 100% free stack where it matters most: [Laya](https://huggingface.co/convaiinnovations/laya)
 and [GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide) as
@@ -51,20 +52,28 @@ both services.
 
 ## How it works
 
+0. **Who's eating?** Optionally, each partner's name — asked once per
+   browser, skippable, editable later in Settings. Skip it and the app
+   just says "Partner One" / "Partner Two".
 1. **Partner 1** types or taps 🎤 to say what they want, then taps
-   **Pass to Partner Two**. Partner 1's answer blurs (tap to peek) so
-   Partner 2 answers honestly.
-2. **Partner 2** does the same, then taps **Find Our Table**.
-3. The backend fetches nearby restaurants for the chosen search radius
-   (real ones via OSM, or a demo set if location is unavailable), scores
-   them against both answers with the selected AI engine, and:
-   - **≥ 70% confidence** → an interactive wheel spins and lands exactly
-     on the winner, with confetti.
+   **Pass to Partner Two**.
+2. **A real handoff screen** — "Pass it to Partner Two. No peeking." —
+   with an explicit "I'm Partner Two — ready" button. Nothing auto-advances.
+3. **Partner 2** does the same (Partner 1's answer stays blurred, tap to
+   peek), then taps **Find Our Table**. This needs a real location — there
+   is no demo/mock fallback; if location is off, a drawer asks you to turn
+   it on before anything runs.
+4. The backend fetches nearby restaurants for the chosen search radius via
+   OpenStreetMap, scores them against both answers with the selected AI
+   engine, and:
+   - **≥ 70% confidence** → a branch-and-converge "deciding" animation
+     narrows to the finalists, then an interactive wheel spins and lands
+     exactly on the winner with a gold glow and shimmer.
    - **< 70% confidence** → a mediator question appears (e.g. "Fast Food
      or Sit-down Dining?"). Whichever you both tap gets added to the
      decision and it tries again — for up to 2 rounds, after which it
      does a fair random spin between the finalists so you're never stuck.
-4. The winner is revealed with a match badge and a live map pin. Signed
+5. The winner is revealed with a match badge and a live map pin. Signed
    in, it's saved to History automatically; as a guest, it's queued
    locally and synced the moment you log in.
 
@@ -79,7 +88,9 @@ seed a specific place straight into tonight's wheel.
 
 ## Decision engines
 
-An engine toggle sits at the top of the app:
+Which engine to use is picked in **Settings**, under "Under the hood"
+(it used to sit at the top of the Decide screen; moved so a couple mid-round
+isn't confronted with a technical choice they rarely touch):
 
 | Engine | Notes |
 |---|---|
@@ -108,17 +119,16 @@ Without `CLM_EMB_URL` set, CLM-8B stays greyed out in the toggle
 ("GPU required") and is never loaded — the app never tries to run an 8B
 model on the free CPU tier.
 
-### 🛠️ Dev Mode (hidden)
+### 🛠️ Developer mode
 
-Triple-click (or triple-tap) the "Food Wheeler" title on the Decide
-screen to toggle a hidden developer mode. While it's on, every request
-is also scored by every other available engine purely for comparison —
-the wheel and the mediator still follow only the engine you selected,
-but the reveal card and the mediator both show a side-by-side score
-line. A secondary engine that fails or times out just shows as
-unavailable; it never breaks the actual game. Set the
-`DEV_MODE_ALLOWED=0` environment variable on the API to disable this
-feature entirely.
+A plain switch in **Settings**, next to the engine picker (no more
+triple-tap easter egg). While it's on, every request is also scored by
+every other available engine purely for comparison — the wheel and the
+mediator still follow only the engine you selected, but the reveal card
+and the mediator both show a side-by-side score line. A secondary engine
+that fails or times out just shows as unavailable; it never breaks the
+actual game. Set the `DEV_MODE_ALLOWED=0` environment variable on the API
+to disable this feature entirely (the Settings switch then has no effect).
 
 ## Local development
 
@@ -156,7 +166,7 @@ Backend environment variables (all optional — sane defaults for local dev):
 | `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated list of exact origins allowed to call the API (CORS). Set to your Vercel production domain in production. |
 | `VERCEL_PREVIEW_ORIGIN_REGEX` | matches `*-pravinraj01.vercel.app` | Regex for Vercel preview-deploy origins, which get a unique subdomain per branch/commit. |
 | `MEMORY_BUDGET_MB` | `11000` | RAM ceiling `EngineManager` won't exceed when deciding whether to keep a second engine loaded. |
-| `DEV_MODE_ALLOWED` | `1` | Set to `0` to disable the triple-tap Dev Mode comparison feature entirely. |
+| `DEV_MODE_ALLOWED` | `1` | Set to `0` to disable the Dev Mode comparison feature entirely (its Settings switch then has no effect). |
 | `CLM_EMB_URL` | unset | URL of a remote CLM-8B embeddings server (see above). Leaving it unset keeps CLM-8B greyed out. |
 
 Run the backend tests:
@@ -387,7 +397,7 @@ polling and splash screen cover.
 
 ```
 app.py                  Flask routes, ranking/tie/mediator logic, CORS, rate limiting (engine-agnostic)
-candidates.py           OSM Overpass fetch + mock fallback + radius tiers + Explore listing
+candidates.py           OSM Overpass fetch (parallel mirrors) + radius control + Explore listing; requires a real location
 engines/
   base.py               DecisionEngine interface every engine implements
   laya_engine.py         ConvAI Laya wrapper
