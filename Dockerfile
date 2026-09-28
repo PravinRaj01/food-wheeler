@@ -28,6 +28,16 @@ COPY --chown=user . .
 # Bake the Laya and GLiNER checkpoints into the image.
 RUN python scripts/prefetch_models.py
 
+# Force every subsequent huggingface_hub call to use only the local cache
+# populated above. This is what actually prevents the failure we hit once
+# in production: prefetch_models.py originally didn't force a real download
+# (Router() alone is lazy), so every cold start silently re-downloaded from
+# HF Hub and eventually got rate-limited on Cloud Run's shared egress IP,
+# crashing the container. With the cache correctly populated AND network
+# access to HF cut off entirely at runtime, that failure mode is closed on
+# both ends, not just the one that caused it.
+ENV HF_HUB_OFFLINE=1
+
 ENV PORT=7860
 EXPOSE 7860
 

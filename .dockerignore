@@ -9,3 +9,4 @@ tests/
 *.log
 node_modules/
 .claude/
+web/

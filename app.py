@@ -12,12 +12,14 @@ engines/; everything below the engine.score() call is engine-agnostic.
 import os
 import re
 import secrets
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from functools import wraps
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request
 
-from candidates import PRICE_TIER_MAX, get_candidates, with_colors
+from candidates import DEFAULT_RADIUS_TIER, PRICE_TIER_MAX, RADIUS_TIERS_M, get_candidates, list_places, with_colors
 from engines import (
     EngineManager,
     EngineScoreError,
@@ -27,6 +29,95 @@ from engines import (
 )
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# CORS — the frontend (Next.js on Vercel) is a separate origin from this API
+# (Cloud Run). No flask-cors dependency; this is small enough to do by hand.
+# ---------------------------------------------------------------------------
+ALLOWED_ORIGINS = {
+    o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()
+}
+# Vercel preview deploys get a unique per-branch/per-commit subdomain; this
+# matches any of them under the account rather than hardcoding one.
+VERCEL_PREVIEW_RE = re.compile(
+    os.environ.get("VERCEL_PREVIEW_ORIGIN_REGEX", r"^https://[a-z0-9-]+-pravinraj01\.vercel\.app$")
+)
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    if not origin:
+        return False
+    return origin in ALLOWED_ORIGINS or bool(VERCEL_PREVIEW_RE.match(origin))
+
+
+@app.after_request
+def _add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if _origin_allowed(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Max-Age"] = "86400"
+    return response
+
+
+@app.route("/api/<path:_unused>", methods=["OPTIONS"])
+def _cors_preflight(_unused):
+    return "", 204
+
+# ---------------------------------------------------------------------------
+# Rate limiting — /api/decide runs the AI engine and (on a cache miss) an
+# Overpass query, so it's the endpoint worth protecting on a public API with
+# no auth in front of it. A plain in-memory token bucket per IP is enough:
+# the Dockerfile runs a single gunicorn worker, so there's exactly one
+# process holding this dict — no Redis needed. Stale IPs are pruned lazily
+# (a 1-in-500 chance per request) rather than on a schedule, so the bucket
+# dict never grows unbounded over a long-running container's lifetime.
+# ---------------------------------------------------------------------------
+RATE_LIMIT_CAPACITY = 10  # burst allowance
+RATE_LIMIT_REFILL_PER_SEC = 10 / 60  # sustained ~1 request per 6s per IP
+RATE_LIMIT_STALE_AFTER_S = 600
+
+_rate_limit_lock = threading.Lock()
+_rate_limit_buckets: dict[str, tuple[float, float]] = {}  # ip -> (tokens, last_seen)
+
+
+def _client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def _rate_limit_hit(ip: str) -> bool:
+    now = time.time()
+    with _rate_limit_lock:
+        if secrets.randbelow(500) == 0:
+            stale = [k for k, (_, last) in _rate_limit_buckets.items() if now - last > RATE_LIMIT_STALE_AFTER_S]
+            for k in stale:
+                del _rate_limit_buckets[k]
+
+        tokens, last = _rate_limit_buckets.get(ip, (float(RATE_LIMIT_CAPACITY), now))
+        tokens = min(RATE_LIMIT_CAPACITY, tokens + (now - last) * RATE_LIMIT_REFILL_PER_SEC)
+        if tokens < 1:
+            _rate_limit_buckets[ip] = (tokens, now)
+            return True
+        _rate_limit_buckets[ip] = (tokens - 1, now)
+        return False
+
+
+def rate_limited(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if _rate_limit_hit(_client_ip()):
+            return jsonify({
+                "status": "error", "code": "RATE_LIMITED",
+                "message": "Too many requests — please wait a few seconds and try again.",
+            }), 429
+        return f(*args, **kwargs)
+    return wrapper
+
 
 MAX_INPUT_CHARS = 500
 TIE_EPSILON = 0.02
@@ -246,7 +337,10 @@ def _validate(body: dict):
     source_in = body.get("source")
     engine_id = body.get("engine") or manager.default_id
     dev_mode = bool(body.get("dev_mode")) and DEV_MODE_ALLOWED
-    return p1, p2, tiebreakers, round_num, location, candidates_in, source_in, engine_id, dev_mode
+    radius_tier = body.get("radius_tier") or DEFAULT_RADIUS_TIER
+    if radius_tier not in RADIUS_TIERS_M:
+        radius_tier = DEFAULT_RADIUS_TIER
+    return p1, p2, tiebreakers, round_num, location, candidates_in, source_in, engine_id, dev_mode, radius_tier
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +496,15 @@ def run_dev_mode_comparison(primary_engine_id: str, primary_result, state: str,
 # ---------------------------------------------------------------------------
 @app.get("/")
 def index():
-    return render_template("index.html")
+    # v1's single-page frontend (templates/index.html) is retired - the real
+    # UI is the Next.js app in web/, deployed separately (Vercel). This API
+    # has no page of its own to serve; a small JSON banner is more useful
+    # here than a 404 for anyone who lands on the bare API origin directly.
+    return jsonify({
+        "service": "food-wheeler-api",
+        "status": "ok",
+        "docs": "https://github.com/PravinRaj01/food-wheeler",
+    })
 
 
 @app.get("/api/health")
@@ -420,17 +522,36 @@ def list_engines():
     return jsonify(manager.list_status())
 
 
+@app.get("/api/places")
+def places_route():
+    """The Explore page's browsing endpoint - up to 60 nearby places, no AI
+    scoring involved. Separate from /api/decide's curated, capped list."""
+    lat = request.args.get("lat", type=float)
+    lng = request.args.get("lng", type=float)
+    location = {"lat": lat, "lng": lng} if lat is not None and lng is not None else None
+
+    tier = request.args.get("tier") or DEFAULT_RADIUS_TIER
+    if tier not in RADIUS_TIERS_M:
+        tier = DEFAULT_RADIUS_TIER
+    cuisine = request.args.get("cuisine") or None
+    diet = request.args.get("diet") or None
+
+    places, source = list_places(location, radius_tier=tier, cuisine=cuisine, diet=diet)
+    return jsonify({"places": places, "source": source, "tier": tier})
+
+
 @app.post("/api/engines/<engine_id>/warm")
 def warm_engine(engine_id):
     return jsonify(manager.warm(engine_id))
 
 
 @app.post("/api/decide")
+@rate_limited
 def decide():
     body = request.get_json(silent=True) or {}
     try:
         (p1, p2, tiebreakers, round_num, location, candidates_in,
-         source_in, engine_id, dev_mode) = _validate(body)
+         source_in, engine_id, dev_mode, radius_tier) = _validate(body)
     except ValidationError as e:
         return jsonify({"status": "error", "code": e.code, "message": e.message}), 400
 
@@ -448,7 +569,7 @@ def decide():
     if candidates_in:
         cands, source = candidates_in, source_in or "osm"
     else:
-        cands, source = get_candidates(location)
+        cands, source = get_candidates(location, radius_tier=radius_tier)
     cands = with_colors(cands)
 
     combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])

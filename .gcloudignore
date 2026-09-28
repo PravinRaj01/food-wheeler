@@ -13,3 +13,7 @@ tests/
 *.log
 node_modules/
 .claude/
+# The Next.js frontend lives here but deploys separately to Vercel - it has
+# nothing to do with this Dockerfile and would otherwise upload its whole
+# source tree (plus any local .next/ build cache) to Cloud Build for nothing.
+web/

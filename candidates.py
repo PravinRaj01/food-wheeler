@@ -14,11 +14,23 @@ OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ]
-OVERPASS_TIMEOUT_S = 6
 CACHE_TTL_S = 600  # 10 minutes
 MIN_RESULTS_BEFORE_WIDEN = 5
 MIN_RESULTS_BEFORE_FALLBACK = 3
-MAX_CANDIDATES = 6
+
+# Radius tiers ("the Expand Radius flex" - Phase 4). "local" widens to a
+# second, larger radius if too few results come back nearby; "city" and
+# "roadtrip" query their full radius directly since a sparse result at 5-15km
+# usually just means a sparse area, not a bad first guess.
+RADIUS_TIERS_M = {"local": 1500, "city": 5000, "roadtrip": 15000}
+WIDEN_RADIUS_M = {"local": 3000}
+MAX_CANDIDATES_BY_TIER = {"local": 6, "city": 8, "roadtrip": 8}
+# A wider radius can genuinely return hundreds of venues in a dense city;
+# capping the Overpass response keeps the query fast and the payload small.
+OVERPASS_RESULT_CAP = {"local": 200, "city": 300, "roadtrip": 400}
+OVERPASS_TIMEOUT_S_BY_TIER = {"local": 6, "city": 8, "roadtrip": 10}
+DEFAULT_RADIUS_TIER = "local"
+PLACES_LIST_LIMIT = 60
 
 # Rough price-tier ceilings in dollars, used only for the budget guard.
 PRICE_TIER_MAX = {"$": 15, "$$": 30, "$$$": 60}
@@ -159,20 +171,20 @@ def _tags_list_from_osm(tags: dict, amenity: str) -> list[str]:
     return out or ["restaurant"]
 
 
-def _fetch_overpass(lat: float, lng: float, radius_m: int) -> list[dict] | None:
+def _fetch_overpass(lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int) -> list[dict] | None:
     query = f"""
-    [out:json][timeout:{OVERPASS_TIMEOUT_S}];
+    [out:json][timeout:{timeout_s}];
     (
       node["amenity"~"^(restaurant|fast_food|cafe)$"]["name"](around:{radius_m},{lat},{lng});
       way["amenity"~"^(restaurant|fast_food|cafe)$"]["name"](around:{radius_m},{lat},{lng});
     );
-    out center tags;
+    out center tags {result_cap};
     """
     headers = {"User-Agent": "food-wheeler/1.0 (educational prototype)"}
     for endpoint in OVERPASS_ENDPOINTS:
         try:
             resp = requests.post(
-                endpoint, data={"data": query}, headers=headers, timeout=OVERPASS_TIMEOUT_S
+                endpoint, data={"data": query}, headers=headers, timeout=timeout_s
             )
             resp.raise_for_status()
             data = resp.json()
@@ -209,43 +221,128 @@ def _fetch_overpass(lat: float, lng: float, radius_m: int) -> list[dict] | None:
     return None
 
 
-def get_candidates(location: dict | None) -> tuple[list[dict], str]:
-    """Returns (candidates, source) where source is 'osm' or 'mock'."""
+def _fetch_for_tier(lat: float, lng: float, radius_m: int, radius_tier: str) -> list[dict] | None:
+    cache_key = (round(lat, 3), round(lng, 3), radius_m)
+    cached = _cache.get(cache_key)
+    if cached and time.time() - cached[0] < CACHE_TTL_S:
+        return cached[1]
+    results = _fetch_overpass(
+        lat, lng, radius_m,
+        timeout_s=OVERPASS_TIMEOUT_S_BY_TIER[radius_tier],
+        result_cap=OVERPASS_RESULT_CAP[radius_tier],
+    )
+    if results is not None:
+        _cache[cache_key] = (time.time(), results)
+    return results
+
+
+def get_candidates(location: dict | None, radius_tier: str = DEFAULT_RADIUS_TIER) -> tuple[list[dict], str]:
+    """Returns (candidates, source) where source is 'osm' or 'mock'. The AI
+    decision engines see only this curated, capped list - see list_places()
+    for the uncurated Explore browsing list."""
+    radius_tier = radius_tier if radius_tier in RADIUS_TIERS_M else DEFAULT_RADIUS_TIER
     if not location or location.get("lat") is None or location.get("lng") is None:
         return _mock_candidates(None, None), "mock"
 
     lat, lng = location["lat"], location["lng"]
-    for radius_m in (1500, 3000):
-        cache_key = (round(lat, 3), round(lng, 3), radius_m)
-        cached = _cache.get(cache_key)
-        if cached and time.time() - cached[0] < CACHE_TTL_S:
-            results = cached[1]
-        else:
-            results = _fetch_overpass(lat, lng, radius_m)
-            if results is not None:
-                _cache[cache_key] = (time.time(), results)
+    radii = [RADIUS_TIERS_M[radius_tier]]
+    if radius_tier in WIDEN_RADIUS_M:
+        radii.append(WIDEN_RADIUS_M[radius_tier])
 
+    max_candidates = MAX_CANDIDATES_BY_TIER[radius_tier]
+    stratify = radius_tier == "roadtrip"
+
+    for i, radius_m in enumerate(radii):
+        results = _fetch_for_tier(lat, lng, radius_m, radius_tier)
         if results is not None and len(results) >= MIN_RESULTS_BEFORE_FALLBACK:
-            if len(results) >= MIN_RESULTS_BEFORE_WIDEN or radius_m == 3000:
-                return _select_diverse(results)[:MAX_CANDIDATES], "osm"
+            if len(results) >= MIN_RESULTS_BEFORE_WIDEN or i == len(radii) - 1:
+                return _select_diverse(results, max_candidates, stratify=stratify), "osm"
 
     return _mock_candidates(lat, lng), "mock"
 
 
-def _select_diverse(results: list[dict]) -> list[dict]:
-    """Nearest first, but skip a cuisine we've already picked when possible."""
+def _pick_diverse(bucket: list[dict], count: int) -> list[dict]:
+    """From one distance bucket, prefer distinct cuisines up to `count`."""
+    picked: list[dict] = []
+    seen_cuisine = set()
+    for r in bucket:
+        if len(picked) >= count:
+            break
+        if r["cuisine"] not in seen_cuisine:
+            picked.append(r)
+            seen_cuisine.add(r["cuisine"])
+    for r in bucket:
+        if len(picked) >= count:
+            break
+        if r not in picked:
+            picked.append(r)
+    return picked
+
+
+def _select_diverse(results: list[dict], max_candidates: int, stratify: bool = False) -> list[dict]:
+    """Nearest first, preferring a cuisine we haven't picked yet. For the
+    Road Trip tier (`stratify=True`), pick across near/mid/far distance
+    rings instead so far-away places genuinely show up rather than the
+    nearest 8 dominating a 15km radius."""
     results = sorted(results, key=lambda r: r.get("distance_km", 999))
+
+    if stratify and len(results) >= max_candidates:
+        n = len(results)
+        near, mid, far = results[: n // 3], results[n // 3 : 2 * n // 3], results[2 * n // 3 :]
+        # 2 near / 3 mid / 3 far for the default max_candidates=8; scaled
+        # proportionally if a tier's max ever changes.
+        near_n = max(1, round(max_candidates * 0.25))
+        mid_n = max(1, round(max_candidates * 0.375))
+        far_n = max_candidates - near_n - mid_n
+        picked = _pick_diverse(near, near_n) + _pick_diverse(mid, mid_n) + _pick_diverse(far, far_n)
+        if len(picked) < max_candidates:
+            remaining = [r for r in results if r not in picked]
+            picked += remaining[: max_candidates - len(picked)]
+        return picked[:max_candidates]
+
     picked, seen_cuisine = [], set()
     for r in results:
         if r["cuisine"] not in seen_cuisine:
             picked.append(r)
             seen_cuisine.add(r["cuisine"])
     for r in results:
-        if len(picked) >= MAX_CANDIDATES:
+        if len(picked) >= max_candidates:
             break
         if r not in picked:
             picked.append(r)
-    return picked
+    return picked[:max_candidates]
+
+
+def list_places(
+    location: dict | None,
+    radius_tier: str = DEFAULT_RADIUS_TIER,
+    cuisine: str | None = None,
+    diet: str | None = None,
+    limit: int = PLACES_LIST_LIMIT,
+) -> tuple[list[dict], str]:
+    """The Explore page's uncurated browsing list - up to `limit` places,
+    nearest first, with simple cuisine/diet filters. No AI involved."""
+    radius_tier = radius_tier if radius_tier in RADIUS_TIERS_M else DEFAULT_RADIUS_TIER
+
+    if not location or location.get("lat") is None or location.get("lng") is None:
+        results, source = _mock_candidates(None, None), "mock"
+    else:
+        lat, lng = location["lat"], location["lng"]
+        radius_m = RADIUS_TIERS_M[radius_tier]
+        fetched = _fetch_for_tier(lat, lng, radius_m, radius_tier)
+        if fetched is not None and len(fetched) >= MIN_RESULTS_BEFORE_FALLBACK:
+            results, source = fetched, "osm"
+        else:
+            results, source = _mock_candidates(lat, lng), "mock"
+
+    if cuisine:
+        needle = cuisine.lower()
+        results = [r for r in results if needle in r["cuisine"].lower()]
+    if diet:
+        results = [r for r in results if r.get("dims", {}).get("diet") == diet]
+
+    results = sorted(results, key=lambda r: r.get("distance_km", 999))[:limit]
+    return with_colors(results), source
 
 
 def _mock_candidates(lat, lng) -> list[dict]:

@@ -1,5 +1,5 @@
 ---
-title: The Food-Wheeler
+title: Food Wheeler
 emoji: 🎡
 colorFrom: pink
 colorTo: indigo
@@ -8,41 +8,74 @@ app_port: 7860
 pinned: false
 ---
 
-# The Food-Wheeler
+# Food Wheeler
 
 Two partners, one phone, one decision. Type or dictate what you each
 want, and a pluggable AI "System 1" decision engine picks a restaurant —
-confidently, or by asking one quick tie-breaker question together.
+confidently, or by asking one quick tie-breaker question together. It's
+also a real installable PWA: an app shell with navigation, offline-first
+history sync, and accounts, matching the feel of a native app on both
+desktop and phone.
 
-100% free stack: Flask, [Laya](https://huggingface.co/convaiinnovations/laya)
+100% free stack where it matters most: [Laya](https://huggingface.co/convaiinnovations/laya)
 and [GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide) as
 decision engines, OpenStreetMap (Overpass + Leaflet) for real nearby
 restaurants and the map, and the browser's native Web Speech and
-Geolocation APIs for voice and location — no paid API keys anywhere.
+Geolocation APIs for voice and location — no paid API keys for the core
+experience. Accounts and cross-device history sync use Neon's free
+Postgres tier.
+
+## Two services
+
+```
+food-wheeler/              Flask API — AI ranking, OSM candidates, mediator logic
+└─ web/                    Next.js 16 PWA — the actual app people use
+```
+
+The Flask API (this repo's root) is a pure JSON backend: given both
+partners' text and a location, it returns a winner or a tie-breaker
+question. It has no UI of its own anymore — `GET /` just returns a small
+JSON banner. **`web/`** is the real frontend: a Next.js App Router PWA
+with a landing page, the decide flow, an Explore map, account history,
+and settings, deployed separately (Vercel) and talking to the Flask API
+over CORS. See [`web/README` conventions below](#frontend-web) for its
+own setup — there's no separate README in that folder; this one covers
+both services.
 
 > **Hosting note:** Hugging Face now requires a PRO subscription
 > ($9/mo) to run a Docker Space on its free CPU hardware — only fully
-> static (no-backend) Spaces are free there. Since this app needs a real
+> static (no-backend) Spaces are free there. Since this API needs a real
 > Flask backend, the recommended free host is **Google Cloud Run**
-> instead (see below); the same `Dockerfile` works on both.
+> instead (see below); the same `Dockerfile` works on both. The frontend
+> deploys to **Vercel**'s free Hobby tier.
 
 ## How it works
 
 1. **Partner 1** types or taps 🎤 to say what they want, then taps
-   **Pass to Partner 2 →**. Partner 1's answer blurs (tap to peek) so
+   **Pass to Partner Two**. Partner 1's answer blurs (tap to peek) so
    Partner 2 answers honestly.
-2. **Partner 2** does the same, then taps **Wheel the Food!**
-3. The backend fetches up to 6 nearby restaurants (real ones via OSM, or
-   a demo set if location is unavailable), scores them against both
-   answers with the selected AI engine, and:
+2. **Partner 2** does the same, then taps **Find Our Table**.
+3. The backend fetches nearby restaurants for the chosen search radius
+   (real ones via OSM, or a demo set if location is unavailable), scores
+   them against both answers with the selected AI engine, and:
    - **≥ 70% confidence** → an interactive wheel spins and lands exactly
      on the winner, with confetti.
-   - **< 70% confidence** → a **One Joint Tap** mediator question appears
-     (e.g. "Fast Food or Sit-down Dining?"). Whichever you both tap gets
-     added to the decision and it tries again — for up to 2 rounds, after
-     which it does a fair random spin between the finalists so you're
-     never stuck.
-4. The winner is revealed with a match badge and a live map pin.
+   - **< 70% confidence** → a mediator question appears (e.g. "Fast Food
+     or Sit-down Dining?"). Whichever you both tap gets added to the
+     decision and it tries again — for up to 2 rounds, after which it
+     does a fair random spin between the finalists so you're never stuck.
+4. The winner is revealed with a match badge and a live map pin. Signed
+   in, it's saved to History automatically; as a guest, it's queued
+   locally and synced the moment you log in.
+
+### Search radius
+
+A radius chip on the Decide screen controls how far candidates are
+pulled from: **Local** (1.5 km), **City** (5 km) or **Road Trip**
+(15 km, stratified across near/mid/far distance rings so genuinely far
+options show up, not just the six closest places). The **Explore** tab
+uses the same tiers to browse the full uncurated list on a map and can
+seed a specific place straight into tonight's wheel.
 
 ## Decision engines
 
@@ -62,14 +95,14 @@ two different models' scores.
 ### Running CLM-8B (optional)
 
 CLM-8B's reference implementation needs a GPU embeddings server — its
-own 8B-parameter model alone needs ~16GB, more than this Space's whole
+own 8B-parameter model alone needs ~16GB, more than this API's whole
 free RAM budget. To enable it:
 
 1. Start a free GPU notebook (e.g. Google Colab, T4 GPU) running
    `contrastive-lm`'s embeddings server (see
    [Contrastive-LM/CLM](https://github.com/Contrastive-LM/CLM)).
 2. Expose it publicly, e.g. with a Cloudflare/ngrok tunnel.
-3. Set the `CLM_EMB_URL` secret on your Space to that tunnel's URL.
+3. Set the `CLM_EMB_URL` env var on the API to that tunnel's URL.
 
 Without `CLM_EMB_URL` set, CLM-8B stays greyed out in the toggle
 ("GPU required") and is never loaded — the app never tries to run an 8B
@@ -77,16 +110,23 @@ model on the free CPU tier.
 
 ### 🛠️ Dev Mode (hidden)
 
-Triple-click (or triple-tap) the "The Food-Wheeler" title to toggle a
-hidden developer mode. While it's on, every request is also scored by
-every other available engine purely for comparison — the wheel and the
-mediator still follow only the engine you selected, but the reveal card
-and the mediator both show a side-by-side score line (e.g. "⚡ Laya: 62%
-| 🎯 GLiNER: 81%"). A secondary engine that fails or times out just shows
-as unavailable; it never breaks the actual game. Set the `DEV_MODE_ALLOWED=0`
-environment variable to disable this feature entirely.
+Triple-click (or triple-tap) the "Food Wheeler" title on the Decide
+screen to toggle a hidden developer mode. While it's on, every request
+is also scored by every other available engine purely for comparison —
+the wheel and the mediator still follow only the engine you selected,
+but the reveal card and the mediator both show a side-by-side score
+line. A secondary engine that fails or times out just shows as
+unavailable; it never breaks the actual game. Set the
+`DEV_MODE_ALLOWED=0` environment variable on the API to disable this
+feature entirely.
 
 ## Local development
+
+You need both services running: the Flask API on port 5000, the Next.js
+app on port 3000. `localhost` is a secure context, so voice input and
+geolocation both work there.
+
+### Backend (repo root)
 
 Requires Python 3.12 (torch's wheels aren't guaranteed on newer
 versions yet).
@@ -103,15 +143,23 @@ python -m venv .venv
 .venv/bin/python app.py
 ```
 
-Then open http://localhost:5000. `localhost` is a secure context, so
-voice input and geolocation both work there.
-
 **First run note:** Laya and GLiNER each download their model checkpoint
 from the Hugging Face Hub the first time they're used (a few hundred MB
 combined). This is baked into the Docker image at build time (see
-`scripts/prefetch_models.py`) so it doesn't happen on a live Space.
+`scripts/prefetch_models.py`), and `HF_HUB_OFFLINE=1` is set in
+production so a deployed instance never calls the Hub again.
 
-Run the tests:
+Backend environment variables (all optional — sane defaults for local dev):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated list of exact origins allowed to call the API (CORS). Set to your Vercel production domain in production. |
+| `VERCEL_PREVIEW_ORIGIN_REGEX` | matches `*-pravinraj01.vercel.app` | Regex for Vercel preview-deploy origins, which get a unique subdomain per branch/commit. |
+| `MEMORY_BUDGET_MB` | `11000` | RAM ceiling `EngineManager` won't exceed when deciding whether to keep a second engine loaded. |
+| `DEV_MODE_ALLOWED` | `1` | Set to `0` to disable the triple-tap Dev Mode comparison feature entirely. |
+| `CLM_EMB_URL` | unset | URL of a remote CLM-8B embeddings server (see above). Leaving it unset keeps CLM-8B greyed out. |
+
+Run the backend tests:
 
 ```bash
 .venv/Scripts/python -m pytest tests/ -v
@@ -124,95 +172,243 @@ numbers on a few sample couples:
 .venv/Scripts/python scripts/compare_engines.py
 ```
 
-## Deploying to Google Cloud Run (free)
+### Frontend (`web/`)
+
+Requires Node 20+.
+
+```bash
+cd web
+npm install
+cp .env.example .env.local   # fill in DATABASE_URL, AUTH_SECRET, etc. - see below
+npm run dev
+```
+
+Then open http://localhost:3000.
+
+Frontend environment variables (`web/.env.local`, see `web/.env.example`):
+
+| Variable | Purpose |
+|---|---|
+| `NEXT_PUBLIC_API_URL` | The Flask API's origin — `http://localhost:5000` locally, the Cloud Run URL in production. |
+| `DATABASE_URL` | Neon's **pooled** Postgres connection string (runtime queries). |
+| `DATABASE_URL_UNPOOLED` | Neon's **direct** connection string (migrations only, via `drizzle-kit`). |
+| `AUTH_SECRET` | Signs the session cookie. Generate one per environment: `openssl rand -base64 32`. |
+| `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | Optional Google OAuth credentials (Google Cloud Console → APIs & Services → Credentials). Email/password auth works without these. |
+
+**Database setup:** create a free [Neon](https://neon.tech) Postgres
+project, copy both connection strings into `.env.local`, then push the
+schema (`web/lib/db/schema.ts`) to it:
+
+```bash
+cd web
+npx drizzle-kit push
+```
+
+This creates the `users`, `accounts`, `decisions` and `preferences`
+tables. There's no separate migration history — `push` diffs the schema
+file against the live database directly, which is the right workflow for
+a small solo project.
+
+Run the frontend's unit tests (reducer, API client, the wheel's landing
+math as a 1,000-trial property test, and the IndexedDB sync outbox):
+
+```bash
+cd web
+npm test
+```
+
+Lint and a production build:
+
+```bash
+cd web
+npm run lint
+npm run build
+```
+
+## Deploying the backend to Google Cloud Run (free)
 
 Cloud Run's free tier (2M requests, 360,000 GiB-seconds, 180,000
 vCPU-seconds per month, scale-to-zero when idle) comfortably covers a
 personal/demo project. You need a Google account with a Cloud project
 and a billing account attached — Google requires a card on file even
 for free-tier usage, but you won't be charged unless traffic goes well
-beyond hobby-project levels.
+beyond hobby-project levels. **Pick the Cloud Run region closest to
+you** (e.g. `asia-southeast1` for Southeast Asia, `us-central1` for
+central US, `europe-west1` for Europe) — it directly affects latency.
 
-The easiest path needs **no local installs**: open
-[Cloud Shell](https://shell.cloud.google.com) in your browser (it comes
-with `gcloud` pre-installed and pre-authenticated to your account),
-upload or `git clone` this repo there, then from the repo's root run:
+**Sizing:** use **8 GiB memory / 2 vCPU**. 4 GiB is *not* enough —
+Laya plus GLiNER plus the Python/Flask/torch baseline needs more
+headroom than that, and `EngineManager`'s memory guard will correctly
+refuse to load the second engine rather than crash, but then only one
+engine ever works. Set `MEMORY_BUDGET_MB=6500` (roughly 80% of 8 GiB) to
+match, and set `ALLOWED_ORIGINS` to your Vercel production domain once
+the frontend is deployed (see below) — without it, the browser blocks
+every request with a CORS error even though the API itself is healthy.
+
+### Option A: continuous deployment from GitHub (recommended)
+
+This is what's actually running the live deployment: push to GitHub →
+Cloud Build automatically rebuilds and redeploys. One-time setup, from
+the [Cloud Run console](https://console.cloud.google.com/run):
+
+1. **Create service** → **Continuously deploy from a repository** →
+   **Set up with Developer Connect** → authorize GitHub → pick this repo.
+2. Region: your closest one. Authentication: **Allow public access**.
+   Scaling: min instances **0**, max instances **1–3**.
+3. Under **Container, Networking, Security → Containers**: set
+   **Memory: 8 GiB**, **CPU: 2**, leave **Container port** at its
+   default (the app listens on whatever `$PORT` Cloud Run sets). Add
+   the environment variables from the table above under **Variables &
+   Secrets**. Under **Requests**: **Request timeout: 300s** (cold starts
+   loading two models take longer than the 60s default). Leave
+   **Startup CPU boost** checked — it measurably helps cold-start time.
+4. Click **Create**. Every push to `main` rebuilds and redeploys
+   automatically from then on.
+
+**Two IAM permission errors are common on a brand-new project** the
+first time you set this up, both are one-time and safe to fix yourself:
+- *"Unable to create the connection... Secret Manager"* — enable the
+  Secret Manager API (`secretmanager.googleapis.com`) if it isn't
+  already, wait a minute for IAM propagation, and retry.
+- *"error fetching DeveloperConnect credentials... fetchReadToken"*
+  during the first build — the Cloud Build service account
+  (`PROJECT_NUMBER@cloudbuild.gserviceaccount.com`) needs the
+  `roles/developerconnect.readTokenAccessor` role too (a different
+  default service account gets it automatically, but not this one):
+  ```bash
+  gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+    --member="serviceAccount:PROJECT_NUMBER@cloudbuild.gserviceaccount.com" \
+    --role="roles/developerconnect.readTokenAccessor"
+  ```
+  Then retry the build from **Cloud Build → Triggers → Run**.
+
+### Option B: deploy directly from your machine or Cloud Shell
+
+No GitHub connection needed - good for a one-off deploy or quick
+iteration. Either open [Cloud Shell](https://shell.cloud.google.com)
+(comes with `gcloud` pre-installed and pre-authenticated) or install the
+[Cloud SDK](https://cloud.google.com/sdk/docs/install) locally and run
+`gcloud init` once to pick your project. Then, from the repo root:
 
 ```bash
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com
 gcloud run deploy food-wheeler \
   --source . \
-  --region us-central1 \
-  --memory 4Gi \
+  --region asia-southeast1 \
+  --memory 8Gi \
   --cpu 2 \
   --timeout 300 \
   --max-instances 3 \
   --allow-unauthenticated \
-  --set-env-vars MEMORY_BUDGET_MB=3200
+  --set-env-vars MEMORY_BUDGET_MB=6500,ALLOWED_ORIGINS=https://your-app.vercel.app
 ```
 
-- `--source .` has Cloud Build build the `Dockerfile` for you — no local
-  Docker needed.
-- `--memory 4Gi` gives enough headroom for Laya (~1.6GB) and GLiNER
-  (~1.4GB) to both be loaded at once, with `MEMORY_BUDGET_MB=3200`
-  matching that so `EngineManager` evicts before the container itself
-  gets OOM-killed.
-- `--allow-unauthenticated` makes the URL public (no Google sign-in
-  required to open the app).
-- `--max-instances 3` caps how far it can scale under load, as a safety
-  rail on cost.
+`--source .` has Cloud Build build the `Dockerfile` for you (no local
+Docker needed; it also respects `.gcloudignore`, which excludes `web/`
+so the frontend's `node_modules` never gets uploaded). The command
+prints a `*.run.app` URL when it finishes — put that in the frontend's
+`NEXT_PUBLIC_API_URL`. To redeploy after a change, just run the same
+command again; each deploy creates a new revision and Cloud Run
+traffic-shifts to it once it's healthy.
 
-The command prints a `*.run.app` URL when it finishes — that's a real
-top-level HTTPS origin, so voice input and geolocation both work
-directly (no iframe caveat, unlike embedding a Space's gallery page).
+### Setting a spending limit
 
-To redeploy after a change, run the same `gcloud run deploy` command
-again from the updated code — each deploy creates a new revision and
-Cloud Run traffic-shifts to it once it's healthy.
+Cloud Run has no built-in hard spending cap, but a **budget alert**
+(email notification, doesn't restrict anything) is easy to scope to
+just this project without touching any other projects on the same
+billing account:
 
-If you'd rather use `gcloud` from your own machine instead of Cloud
-Shell, install the [Cloud SDK](https://cloud.google.com/sdk/docs/install),
-run `gcloud init` to pick your project, then run the same `gcloud run
-deploy` command from the repo root.
+```bash
+gcloud billing budgets create \
+  --billing-account=YOUR_BILLING_ACCOUNT_ID \
+  --display-name="food-wheeler spend alert" \
+  --budget-amount=5USD \
+  --filter-projects="projects/YOUR_PROJECT_ID" \
+  --threshold-rule=percent=0.5 \
+  --threshold-rule=percent=1.0
+```
+Use your billing account's actual currency (check with `gcloud billing
+accounts describe YOUR_BILLING_ACCOUNT_ID`) — the amount must match it
+or the API rejects the request. `--max-instances` above is the other
+half of cost control: it caps how many container instances can ever run
+concurrently, bounding your worst-case cost regardless of traffic.
 
-## Deploying to Hugging Face Spaces (needs HF PRO, $9/mo)
+The API also rate-limits itself: `/api/decide` allows a burst of 10
+requests per IP before returning `429 RATE_LIMITED`, refilling at
+roughly one request per 6 seconds sustained. It's a plain in-memory
+token bucket (the Dockerfile runs a single gunicorn worker, so there's
+exactly one process holding it — no Redis needed at this scale).
 
-If you'd rather use Hugging Face and don't mind the PRO subscription:
+## Deploying the frontend to Vercel (free)
+
+From the [Vercel dashboard](https://vercel.com/new), import this GitHub
+repo and set:
+
+- **Root Directory**: `web`
+- **Environment Variables**: everything from the frontend table above
+  (`NEXT_PUBLIC_API_URL` pointing at your Cloud Run URL, the Neon
+  connection strings, `AUTH_SECRET`, and the Google OAuth pair if you
+  set that up).
+
+Vercel auto-detects Next.js and handles the build. Every push to `main`
+deploys to production; every other branch/PR gets its own preview URL —
+which is exactly what `VERCEL_PREVIEW_ORIGIN_REGEX` on the backend is
+for, so preview deploys can call the API too without editing
+`ALLOWED_ORIGINS` for every branch.
+
+**Google OAuth setup is manual** (Google Cloud Console → APIs & Services
+→ Credentials → **Create OAuth client ID**, type **Web application**,
+with an authorized redirect URI of
+`https://your-app.vercel.app/api/auth/callback/google`) — there's no
+CLI/API path for a consumer "Sign in with Google" client, only for
+enterprise Workforce Identity Federation, which is a different feature
+entirely. Email/password login works without any of this and is the
+default.
+
+## Deploying the backend to Hugging Face Spaces (needs HF PRO, $9/mo)
+
+If you'd rather use Hugging Face for the API and don't mind the PRO
+subscription:
 
 1. Create a new Space, SDK = **Docker**.
 2. Push this repo to it (`git remote add space <space-url> && git push space main`).
 3. The build prefetches both models' weights, so the Space's first
    request after a cold start is fast.
-4. **Open the app at its direct URL**, `https://<user>-<space>.hf.space`,
-   not the `huggingface.co/spaces/...` page. The Spaces page embeds the
-   app in an iframe, which can block microphone and geolocation
-   permissions on some mobile browsers; the direct URL is full HTTPS at
-   the top level, so both work. The app shows a banner if it detects
-   it's running inside an iframe.
+4. Set `ALLOWED_ORIGINS` to your Vercel domain in the Space's secrets,
+   same as the Cloud Run setup above.
 5. (Optional) Set the `CLM_EMB_URL` secret if you want to try CLM-8B —
    see above.
 
 Spaces sleep after ~48 hours of no traffic; the first visit after that
-takes 30-60 seconds to wake up, which `/api/health` polling and the
-loading state on the page cover.
+takes 30-60 seconds to wake up, which the frontend's `/api/health`
+polling and splash screen cover.
 
 ## Project layout
 
 ```
-app.py                  Flask routes, ranking/tie/mediator logic (engine-agnostic)
-candidates.py           OSM Overpass fetch + mock fallback + restaurant data
+app.py                  Flask routes, ranking/tie/mediator logic, CORS, rate limiting (engine-agnostic)
+candidates.py           OSM Overpass fetch + mock fallback + radius tiers + Explore listing
 engines/
   base.py               DecisionEngine interface every engine implements
   laya_engine.py         ConvAI Laya wrapper
   gliner_engine.py       Fastino GLiNER2.5-Decide wrapper
   clm_engine.py           Stanford/NVIDIA CLM-8B wrapper (remote-only)
   __init__.py             EngineManager: lazy loading, RAM budget, LRU eviction
-templates/index.html    Single-page frontend (Tailwind, Web Speech, canvas wheel, Leaflet)
 scripts/
   probe_laya.py / probe_gliner.py   confirm each engine's raw output schema
   compare_engines.py                side-by-side sample-case comparison
   prefetch_models.py                used by the Dockerfile build
-tests/                  pytest suite (engines are faked — no GPU/network needed)
+tests/                  pytest suite (engines are faked - no GPU/network needed)
 Dockerfile              Works on Google Cloud Run or a HF Space (Docker SDK)
-.gcloudignore           What `gcloud run deploy --source .` uploads to Cloud Build
+.gcloudignore           What `gcloud run deploy --source .` uploads to Cloud Build (excludes web/)
+
+web/                    Next.js 16 PWA - the actual frontend (see setup above)
+  app/                  Landing page, (app) route group (decide/explore/history/settings), login
+  components/           App shell, decide-flow UI, the kinetic canvas wheel, Explore map
+  lib/
+    decide/             Reducer state machine + the API-mirroring TypeScript types
+    db/                 Drizzle schema + queries (Neon Postgres)
+    auth*.ts            Auth.js v5 config (email/password + Google)
+    sync/outbox.ts       IndexedDB offline-first outbox for guest → account decision sync
+  scripts/              PWA service worker build, icon generation from the logo SVG
 ```

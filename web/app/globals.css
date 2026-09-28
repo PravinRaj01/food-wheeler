@@ -1,0 +1,101 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+:root {
+  /* Canvas: layered burnt-orange, matching the reference direction (colour
+     and tone only - see the plan). Applied as a fixed background on <body>. */
+  --orange-1: #c2410c;
+  --orange-2: #9a3412;
+  --orange-3: #431407;
+
+  --cream: #fff4e6;
+  --peach: #fdba8c;
+  --ember: #fb923c;
+  --ink: #1c0a03;
+
+  --line: rgba(255, 244, 230, 0.12);
+  --line-strong: rgba(255, 244, 230, 0.22);
+  --glass: rgba(255, 244, 230, 0.06);
+  --glass-strong: rgba(255, 244, 230, 0.1);
+
+  --background: var(--orange-2);
+  --foreground: var(--cream);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-cream: var(--cream);
+  --color-peach: var(--peach);
+  --color-ember: var(--ember);
+  --color-ink: var(--ink);
+  --color-line: var(--line);
+  --color-glass: var(--glass);
+  --font-display: var(--font-display);
+  --font-sans: var(--font-sans);
+}
+
+* {
+  border-color: var(--line);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  color: var(--foreground);
+  font-family: var(--font-sans), sans-serif;
+  background-color: var(--orange-2);
+  background-image:
+    radial-gradient(ellipse 90% 70% at 20% 0%, var(--orange-1) 0%, transparent 60%),
+    radial-gradient(ellipse 100% 80% at 100% 100%, var(--orange-3) 0%, transparent 55%),
+    linear-gradient(160deg, var(--orange-2) 0%, var(--orange-3) 100%);
+  background-attachment: fixed;
+  min-height: 100dvh;
+}
+
+.font-display {
+  font-family: var(--font-display), sans-serif;
+}
+
+/* Hairline dividers, used between page sections instead of cards/shadows. */
+.hairline {
+  border-top: 1px solid var(--line);
+}
+.hairline-b {
+  border-bottom: 1px solid var(--line);
+}
+
+/* Floating glass panels - used sparingly, only on interactive surfaces
+   (inputs, mediator, reveal, map), never as a whole-page treatment. */
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--line);
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.55);
+}
+
+/* Dot-prefixed nav label, matching the reference's nav treatment. */
+.nav-dot::before {
+  content: "\2022";
+  margin-right: 0.5em;
+  opacity: 0.5;
+}
+
+.safe-top {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
