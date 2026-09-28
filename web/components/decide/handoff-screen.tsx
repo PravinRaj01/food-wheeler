@@ -24,10 +24,10 @@ export function HandoffScreen({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-[var(--orange-3)] p-6 text-center"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-surface p-6 text-center text-surface-fg"
     >
-      <Smartphone className="h-10 w-10 text-cream/70" />
-      <p className="font-display text-xl text-cream">{handoffLine(p1Name, p2Name)}</p>
+      <Smartphone className="h-10 w-10 text-surface-fg/70" />
+      <p className="font-display text-xl">{handoffLine(p1Name, p2Name)}</p>
       <button
         type="button"
         onClick={onReady}

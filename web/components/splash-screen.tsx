@@ -33,14 +33,18 @@ export function SplashScreen() {
   if (!visible) return null;
 
   return (
+    // Always pale, regardless of the app's own light/dark preference - a
+    // brand launch moment rather than "the current page", and the logo
+    // itself is drawn for a light background (see the plan's explicit
+    // call-out for this, separate from the rest of the theme pass).
     <div
-      className="fixed inset-0 z-100 flex flex-col items-center justify-center gap-5 bg-[var(--orange-3)] transition-opacity duration-400"
+      className="fixed inset-0 z-100 flex flex-col items-center justify-center gap-5 bg-[#FCF4E2] transition-opacity duration-400"
       style={{ opacity: fading ? 0 : 1 }}
       aria-hidden
     >
       <Logo className="h-16 w-16" />
-      <h1 className="font-display text-2xl font-semibold tracking-tight text-cream">Food Wheeler</h1>
-      <div className="h-px w-20 overflow-hidden bg-line">
+      <h1 className="font-display text-2xl font-semibold tracking-tight text-[#431407]">Food Wheeler</h1>
+      <div className="h-px w-20 overflow-hidden bg-[rgba(67,20,7,0.15)]">
         <div className="h-full w-full origin-left animate-[splash-bar_1.1s_ease-in-out_infinite] bg-ember" />
       </div>
       <style>{`

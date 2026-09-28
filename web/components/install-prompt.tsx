@@ -82,19 +82,19 @@ export function InstallButton({ className }: { className?: string }) {
       <Drawer.Root open={iosDrawerOpen} onOpenChange={setIosDrawerOpen}>
         <Drawer.Portal>
           <Drawer.Overlay className="fixed inset-0 z-50 bg-black/50" />
-          <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-[var(--orange-3)] p-6 text-cream outline-none">
+          <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-surface p-6 text-surface-fg outline-none">
             <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-line-strong" />
             <div className="mx-auto flex max-w-sm flex-col gap-4">
               <div className="flex items-center justify-between">
                 <Drawer.Title className="font-display text-lg font-semibold">Add to Home Screen</Drawer.Title>
-                <Drawer.Close className="text-cream/60">
+                <Drawer.Close className="text-surface-fg/60">
                   <X className="h-5 w-5" />
                 </Drawer.Close>
               </div>
-              <p className="flex items-center gap-2 text-sm text-cream/80">
+              <p className="flex items-center gap-2 text-sm text-surface-fg/80">
                 <Share className="h-4 w-4 shrink-0" /> Tap the Share icon in Safari&apos;s toolbar
               </p>
-              <p className="flex items-center gap-2 text-sm text-cream/80">
+              <p className="flex items-center gap-2 text-sm text-surface-fg/80">
                 <SquarePlus className="h-4 w-4 shrink-0" /> Then choose &quot;Add to Home Screen&quot;
               </p>
             </div>

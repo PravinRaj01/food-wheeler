@@ -27,20 +27,20 @@ export function LocationPrompt({
     <Drawer.Root open={open} onOpenChange={onOpenChange}>
       <Drawer.Portal>
         <Drawer.Overlay className="fixed inset-0 z-50 bg-black/50" />
-        <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-[var(--orange-3)] p-6 text-cream outline-none">
+        <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-surface p-6 text-surface-fg outline-none">
           <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-line-strong" />
           <div className="mx-auto flex max-w-sm flex-col gap-4">
             <div className="flex items-center justify-between">
               <Drawer.Title className="font-display text-lg font-semibold">
                 {isBlocked ? "Location is blocked" : "Turn on location?"}
               </Drawer.Title>
-              <Drawer.Close className="text-cream/60">
+              <Drawer.Close className="text-surface-fg/60">
                 <X className="h-5 w-5" />
               </Drawer.Close>
             </div>
 
             {isBlocked ? (
-              <p className="flex items-start gap-2 text-sm text-cream/80">
+              <p className="flex items-start gap-2 text-sm text-surface-fg/80">
                 <Settings className="mt-0.5 h-4 w-4 shrink-0" />
                 Your browser has blocked location for this site. Open its site
                 settings and allow location, then try again - your third
@@ -48,7 +48,7 @@ export function LocationPrompt({
               </p>
             ) : (
               <>
-                <p className="flex items-start gap-2 text-sm text-cream/80">
+                <p className="flex items-start gap-2 text-sm text-surface-fg/80">
                   <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
                   Your third wheel needs to know where you are to find real
                   places nearby. Your position stays on this device and is

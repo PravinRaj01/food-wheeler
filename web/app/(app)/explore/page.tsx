@@ -76,7 +76,7 @@ export default function ExplorePage() {
       <div className="relative h-64 shrink-0 md:h-auto md:flex-1">
         <ExploreMap places={hasLocation ? places : []} userLocation={loc.location} selectedId={selectedId} onSelect={setSelectedId} />
         {!hasLocation && (
-          <div className="absolute top-3 left-3 rounded-full bg-black/50 px-3 py-1 text-[11px] text-cream/80 backdrop-blur">
+          <div className="absolute top-3 left-3 rounded-full bg-black/50 px-3 py-1 text-[11px] text-pale/80 backdrop-blur">
             Turn on location to see real places nearby
           </div>
         )}

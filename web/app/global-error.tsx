@@ -24,8 +24,8 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
           gap: 20,
           padding: 24,
           textAlign: "center",
-          background: "#9A3412",
-          color: "#FFF4E6",
+          background: "#FCF4E2",
+          color: "#431407",
           fontFamily: "system-ui, sans-serif",
         }}
       >
@@ -37,7 +37,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
           type="button"
           onClick={reset}
           style={{
-            background: "#FB923C",
+            background: "#EA580C",
             color: "#1C0A03",
             border: "none",
             borderRadius: 12,

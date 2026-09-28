@@ -1,30 +1,89 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/*
+ * Light/dark theming, from the logo palette.
+ *
+ * The semantic pair is `canvas` (the app's own background, and text on top
+ * of it) and `surface` (a card, sheet or chrome bar that sits ON the
+ * canvas - deliberately the OPPOSITE tone from it, so a surface visibly
+ * lifts off the page rather than blending in). `accent` (ember) and `gold`
+ * never change between themes.
+ *
+ * Every OTHER token below (--cream, --ember, --ink, --orange-2/3, --line,
+ * --glass, ...) is kept as an alias onto these semantic ones, so the ~30
+ * files already using them by name retheme automatically without each one
+ * needing to know which of the two tones it should be. A translucent
+ * black wash over the app's OWN canvas still wants --cream (it flips WITH
+ * the canvas showing through it); --pale is only for the rare badge drawn
+ * over content this app doesn't control the color of (map tiles) instead
+ * of over its own canvas - see explore/page.tsx's map badge.
+ *
+ * :root alone is LIGHT (the default/fallback - e.g. before the no-flash
+ * script in app/layout.tsx has run). data-theme="light|dark" is an
+ * explicit choice (Settings). "System" is no data-theme attribute at all,
+ * which falls through to the OS's prefers-color-scheme below.
+ */
 :root {
-  /* Canvas: layered burnt-orange, matching the reference direction (colour
-     and tone only - see the plan). Applied as a fixed background on <body>. */
-  --orange-1: #c2410c;
-  --orange-2: #9a3412;
-  --orange-3: #431407;
+  --canvas: #fcf4e2;
+  --canvas-glow: #fce7d1;
+  --canvas-fg: #431407;
+  --surface: #9a3412;
+  --surface-fg: #fcf4e2;
+  --accent: #ea580c;
+  --gold: #c9a15a;
+  --pale: #fcf4e2; /* always pale, regardless of theme - see the comment above */
+  --map-tile-filter: none;
 
-  --cream: #fff4e6;
-  --peach: #fdba8c;
-  --ember: #fb923c;
+  /* Back-compat aliases onto the semantic tokens above - see the big
+     comment. Values here are the LIGHT ones; the dark overrides below only
+     ever touch the semantic tokens, never these aliases directly. */
+  --orange-1: var(--canvas-glow);
+  --orange-2: var(--canvas);
+  --orange-3: var(--surface);
+  --cream: var(--canvas-fg);
+  --peach: var(--gold);
+  --ember: var(--accent);
   --ink: #1c0a03;
+  --line: color-mix(in oklab, var(--canvas-fg) 12%, transparent);
+  --line-strong: color-mix(in oklab, var(--canvas-fg) 22%, transparent);
+  --glass: color-mix(in oklab, var(--canvas-fg) 6%, transparent);
+  --glass-strong: color-mix(in oklab, var(--canvas-fg) 10%, transparent);
 
-  --line: rgba(255, 244, 230, 0.12);
-  --line-strong: rgba(255, 244, 230, 0.22);
-  --glass: rgba(255, 244, 230, 0.06);
-  --glass-strong: rgba(255, 244, 230, 0.1);
+  --background: var(--canvas);
+  --foreground: var(--canvas-fg);
+}
 
-  --background: var(--orange-2);
-  --foreground: var(--cream);
+:root[data-theme="dark"] {
+  --canvas: #2e1006;
+  --canvas-glow: #6b2710;
+  --canvas-fg: #fcf4e2;
+  --surface: #fce7d1;
+  --surface-fg: #431407;
+  --map-tile-filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.5);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --canvas: #2e1006;
+    --canvas-glow: #6b2710;
+    --canvas-fg: #fcf4e2;
+    --surface: #fce7d1;
+    --surface-fg: #431407;
+    --map-tile-filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.5);
+  }
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-canvas-fg: var(--canvas-fg);
+  --color-surface: var(--surface);
+  --color-surface-fg: var(--surface-fg);
+  --color-accent: var(--accent);
+  --color-gold: var(--gold);
+  --color-pale: var(--pale);
   --color-cream: var(--cream);
   --color-peach: var(--peach);
   --color-ember: var(--ember);
@@ -40,17 +99,29 @@
 }
 
 html {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
   color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+  }
 }
 
 body {
   color: var(--foreground);
   font-family: var(--font-sans), sans-serif;
-  background-color: var(--orange-2);
+  background-color: var(--canvas);
+  /* One soft glow on a flat base, in both themes - dark uses a moody, more
+     saturated glow; light uses the same shape at much lower contrast (the
+     plan's "pale canvas with a pale glow"). Values come entirely from the
+     theme-aware --canvas/--canvas-glow tokens above, so this needs no
+     separate light/dark rule of its own. */
   background-image:
-    radial-gradient(ellipse 90% 70% at 20% 0%, var(--orange-1) 0%, transparent 60%),
-    radial-gradient(ellipse 100% 80% at 100% 100%, var(--orange-3) 0%, transparent 55%),
-    linear-gradient(160deg, var(--orange-2) 0%, var(--orange-3) 100%);
+    radial-gradient(ellipse 90% 70% at 20% 0%, var(--canvas-glow) 0%, transparent 60%),
+    radial-gradient(ellipse 100% 80% at 100% 100%, var(--canvas-glow) 0%, transparent 55%);
   background-attachment: fixed;
   min-height: 100dvh;
 }

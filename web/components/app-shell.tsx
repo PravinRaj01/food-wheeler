@@ -31,8 +31,10 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
 
   return (
     <div className="flex min-h-dvh flex-col text-cream">
-      {/* Sticky header */}
-      <header className="safe-top hairline-b sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between bg-[var(--orange-2)]/70 px-5 backdrop-blur-md">
+      {/* Sticky header - a surface chrome bar, not the canvas itself, so it
+          gets surface-fg text rather than inheriting the canvas-fg set on
+          the root div above. */}
+      <header className="safe-top hairline-b sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between bg-surface/70 px-5 text-surface-fg backdrop-blur-md">
         <Link href="/decide" className="flex items-center gap-2">
           <Logo className="h-6 w-6" />
           <span className="font-display text-base font-semibold tracking-tight">Food Wheeler</span>
@@ -57,7 +59,7 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
                   href={item.href}
                   className={cn(
                     "nav-dot flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors",
-                    active ? "bg-cream text-ink font-semibold" : "text-cream/60 hover:text-cream",
+                    active ? "bg-ember text-ink font-semibold" : "text-cream/60 hover:text-cream",
                   )}
                 >
                   <item.icon className="h-4 w-4" />
@@ -81,8 +83,8 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
         <main className="flex-1 overflow-y-auto pb-20 md:pb-0">{children}</main>
       </div>
 
-      {/* Mobile bottom tabs */}
-      <nav className="hairline-b safe-bottom fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t bg-[var(--orange-3)]/85 px-2 py-2 backdrop-blur-lg md:hidden">
+      {/* Mobile bottom tabs - a surface bar, same reasoning as the header. */}
+      <nav className="hairline-b safe-bottom fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t bg-surface/85 px-2 py-2 backdrop-blur-lg md:hidden">
         {navItems.map((item) => {
           const active = pathname === item.href || pathname.startsWith(item.href + "/");
           return (
@@ -91,7 +93,7 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
               href={item.href}
               className={cn(
                 "flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 transition-all",
-                active ? "text-cream scale-105" : "text-cream/50",
+                active ? "text-surface-fg scale-105" : "text-surface-fg/50",
               )}
             >
               <item.icon className="h-5 w-5" />
@@ -100,12 +102,12 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
           );
         })}
         {signedIn ? (
-          <button onClick={handleLogout} className="flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 text-cream/50">
+          <button onClick={handleLogout} className="flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 text-surface-fg/50">
             <LogOut className="h-5 w-5" />
             <span className="text-[10px] font-medium tracking-wide">Logout</span>
           </button>
         ) : (
-          <Link href="/login" className="flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 text-cream/50">
+          <Link href="/login" className="flex min-h-11 flex-col items-center gap-1 rounded-lg px-3 py-1.5 text-surface-fg/50">
             <LogIn className="h-5 w-5" />
             <span className="text-[10px] font-medium tracking-wide">Log in</span>
           </Link>

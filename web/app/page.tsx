@@ -44,7 +44,7 @@ export default function LandingPage() {
           <InstallButton />
           <Link
             href="/decide"
-            className="rounded-full bg-cream px-5 py-2 text-sm font-semibold text-ink transition-opacity hover:opacity-90"
+            className="rounded-full bg-ember px-5 py-2 text-sm font-semibold text-ink transition-opacity hover:opacity-90"
           >
             Start deciding
           </Link>

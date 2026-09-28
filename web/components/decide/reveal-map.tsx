@@ -78,7 +78,7 @@ export function RevealMap({
   return (
     <div
       ref={containerRef}
-      className="h-56 w-full overflow-hidden rounded-xl md:h-64 [&_.leaflet-tile-pane]:[filter:invert(1)_hue-rotate(180deg)_brightness(0.85)_contrast(0.9)_saturate(0.5)]"
+      className="h-56 w-full overflow-hidden rounded-xl md:h-64 [&_.leaflet-tile-pane]:[filter:var(--map-tile-filter)]"
     />
   );
 }

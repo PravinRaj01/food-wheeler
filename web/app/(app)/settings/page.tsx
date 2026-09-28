@@ -13,6 +13,14 @@ import { signOutAction } from "@/app/auth/actions";
 import { listEngines, warmEngine } from "@/lib/api";
 import { EngineToggle } from "@/components/decide/engine-toggle";
 import type { EngineId, EngineListItem } from "@/lib/decide/types";
+import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+
+const THEME_OPTIONS: { id: ThemePreference; label: string }[] = [
+  { id: "system", label: "System" },
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
+];
 
 interface Names {
   p1: string;
@@ -67,6 +75,11 @@ export default function SettingsPage() {
   // initializer) to keep this SSR page's first client render matching what
   // the server sent.
   const [engine, setEngineState] = useReducer((_state: EngineId, next: EngineId) => next, "laya" as EngineId);
+  // Same reducer-not-useState reasoning as `engine`/`names` above.
+  const [theme, setTheme] = useReducer(
+    (_state: ThemePreference, next: ThemePreference) => next,
+    "system" as ThemePreference,
+  );
 
   useEffect(() => {
     getCurrentUserId()
@@ -77,6 +90,15 @@ export default function SettingsPage() {
   useEffect(() => {
     namesDispatch(readStoredNames());
   }, []);
+
+  useEffect(() => {
+    setTheme(getThemePreference());
+  }, []);
+
+  function selectTheme(pref: ThemePreference) {
+    setTheme(pref);
+    setThemePreference(pref);
+  }
 
   // The engine picker used to live at the top of Decide - moved here per
   // the classiness pass so Decide's header isn't cluttered with a choice
@@ -109,7 +131,27 @@ export default function SettingsPage() {
       <p className="text-[11px] uppercase tracking-[0.2em] text-cream/50">Preferences</p>
       <h1 className="font-display mt-2 text-3xl font-semibold text-cream">Settings</h1>
 
-      <div className="glass mt-8 flex items-center justify-between rounded-2xl p-5">
+      <div className="glass mt-8 rounded-2xl p-5">
+        <p className="text-sm font-medium text-cream">Appearance</p>
+        <p className="mt-0.5 mb-3 text-xs text-cream/50">Light, dark, or match your device.</p>
+        <div className="flex gap-1 rounded-lg bg-glass-strong p-1">
+          {THEME_OPTIONS.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => selectTheme(opt.id)}
+              className={cn(
+                "flex-1 rounded-md py-1.5 text-xs font-medium transition-colors",
+                theme === opt.id ? "bg-ember text-ink" : "text-cream/60",
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="glass mt-4 flex items-center justify-between rounded-2xl p-5">
         <div>
           <p className="text-sm font-medium text-cream">Location</p>
           <p className="mt-0.5 text-xs text-cream/50">
