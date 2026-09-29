@@ -97,6 +97,7 @@ export interface DecideRequest {
   tiebreakers: Tiebreaker[];
   round: number;
   radius_km: number;
+  cross_border: boolean;
 }
 
 export interface MatchResponse {
@@ -112,6 +113,11 @@ export interface MatchResponse {
   engine: EngineMeta;
   wheel_ids?: string[];
   comparison?: Record<string, ComparisonEntry>;
+  /** ISO3166-1 alpha-2 country the search was scoped to, or null if it
+   * couldn't be determined (or cross-border was on) - see
+   * candidates.detect_country(). Purely informational; nothing in the
+   * frontend currently reads it. */
+  country?: string | null;
 }
 
 export interface TiebreakerResponse {
@@ -126,6 +132,7 @@ export interface TiebreakerResponse {
   source: "osm" | "mock";
   engine: EngineMeta;
   comparison?: Record<string, ComparisonEntry>;
+  country?: string | null;
 }
 
 export interface ErrorResponse {
@@ -161,4 +168,5 @@ export interface PlacesResponse {
   places: Place[];
   source: "osm" | "mock";
   radius_km: number;
+  country?: string | null;
 }

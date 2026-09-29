@@ -5,6 +5,7 @@ import Link from "next/link";
 import * as Switch from "@radix-ui/react-switch";
 import { isSoundEnabled, setSoundEnabled } from "@/lib/sound";
 import { isDevModeEnabled, setDevModeEnabled } from "@/lib/dev-mode";
+import { isCrossBorderEnabled, setCrossBorderEnabled } from "@/lib/cross-border";
 import { useLocation } from "@/lib/location/location-provider";
 import { saveNames } from "@/components/decide/names-step";
 import { local } from "@/lib/safe-storage";
@@ -57,6 +58,7 @@ export default function SettingsPage() {
   const [, bumpVersion] = useReducer((n: number) => n + 1, 0);
   const sound = useSyncExternalStore(subscribeNoop, isSoundEnabled, getServerSnapshot);
   const devMode = useSyncExternalStore(subscribeNoop, isDevModeEnabled, getServerSnapshot);
+  const crossBorder = useSyncExternalStore(subscribeNoop, isCrossBorderEnabled, getServerSnapshot);
   const loc = useLocation();
   const [userId, setUserId] = useState<string | null | "loading">("loading");
   // A local reducer, not useState + a plain setState-in-effect restore
@@ -169,6 +171,25 @@ export default function SettingsPage() {
           onCheckedChange={(checked) => {
             if (checked) loc.enable();
             else loc.disable();
+          }}
+          className="relative h-6 w-11 shrink-0 rounded-full bg-glass-strong data-[state=checked]:bg-ember"
+        >
+          <Switch.Thumb className="block h-5 w-5 translate-x-0.5 rounded-full bg-cream transition-transform data-[state=checked]:translate-x-5" />
+        </Switch.Root>
+      </div>
+
+      <div className="glass mt-4 flex items-center justify-between rounded-2xl p-5">
+        <div>
+          <p className="text-sm font-medium text-cream">Include places across the border</p>
+          <p className="mt-0.5 text-xs text-cream/50">
+            Off by default - a search near a border stays inside your own country.
+          </p>
+        </div>
+        <Switch.Root
+          checked={crossBorder}
+          onCheckedChange={(checked) => {
+            setCrossBorderEnabled(checked);
+            bumpVersion();
           }}
           className="relative h-6 w-11 shrink-0 rounded-full bg-glass-strong data-[state=checked]:bg-ember"
         >

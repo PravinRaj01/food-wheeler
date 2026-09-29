@@ -33,7 +33,7 @@ from flask import Flask, jsonify, request
 
 from candidates import (
     DEFAULT_RADIUS_KM, PRICE_TIER_MAX, LocationRequired, PlacesUnavailable,
-    clamp_radius_km, get_candidates, haversine_km, list_places, with_colors,
+    clamp_radius_km, detect_country, get_candidates, haversine_km, list_places, with_colors,
 )
 from engines import (
     EngineManager,
@@ -345,6 +345,22 @@ def _location_required_response():
     }), 400
 
 
+def _country_for_response(location: dict | None, same_country: bool) -> str | None:
+    """The ISO code to report back to the frontend (Explore/reveal show a
+    "Demo places" - style badge off this in a later pass). get_candidates()/
+    list_places() already call detect_country() themselves when
+    same_country is True; this is a second call, but detect_country() caches
+    hard (see its own docstring), so it's a dict lookup, not a second
+    network round trip. Never raises - a detection hiccup here just means
+    the response omits `country`, not a broken request."""
+    if not same_country or not location or location.get("lat") is None or location.get("lng") is None:
+        return None
+    try:
+        return detect_country(location["lat"], location["lng"])
+    except Exception:  # noqa: BLE001 - purely informational, must never break the response
+        return None
+
+
 # A little looser than the server's own radius filter - candidates_in is the
 # FRONTEND's memory of an earlier real fetch, not a fresh Overpass answer, so
 # small GPS drift between rounds of the same session shouldn't force a
@@ -431,7 +447,9 @@ def _validate(body: dict):
     engine_id = body.get("engine") or manager.default_id
     dev_mode = bool(body.get("dev_mode")) and DEV_MODE_ALLOWED
     radius_km = clamp_radius_km(body.get("radius_km", DEFAULT_RADIUS_KM))
-    return p1, p2, tiebreakers, round_num, location, candidates_in, source_in, engine_id, dev_mode, radius_km
+    cross_border = bool(body.get("cross_border"))
+    return (p1, p2, tiebreakers, round_num, location, candidates_in, source_in, engine_id, dev_mode,
+            radius_km, cross_border)
 
 
 # ---------------------------------------------------------------------------
@@ -624,14 +642,20 @@ def places_route():
     radius_km = clamp_radius_km(request.args.get("radius_km", DEFAULT_RADIUS_KM, type=float))
     cuisine = request.args.get("cuisine") or None
     diet = request.args.get("diet") or None
+    # Flask's type=bool on a query string is a classic trap - bool("0") is
+    # True in Python, so ?cross_border=0 would otherwise turn this on. Only
+    # an actually-truthy string counts.
+    same_country = request.args.get("cross_border", "") not in ("1", "true", "True")
 
     try:
-        places, source = list_places(location, radius_km=radius_km, cuisine=cuisine, diet=diet)
+        places, source = list_places(location, radius_km=radius_km, cuisine=cuisine, diet=diet,
+                                      same_country=same_country)
     except PlacesUnavailable as exc:
         return _places_unavailable_response(exc, radius_km)
     except LocationRequired:
         return _location_required_response()
-    return jsonify({"places": places, "source": source, "radius_km": radius_km})
+    country = _country_for_response(location, same_country)
+    return jsonify({"places": places, "source": source, "radius_km": radius_km, "country": country})
 
 
 @app.post("/api/engines/<engine_id>/warm")
@@ -645,9 +669,10 @@ def decide():
     body = request.get_json(silent=True) or {}
     try:
         (p1, p2, tiebreakers, round_num, location, candidates_in,
-         source_in, engine_id, dev_mode, radius_km) = _validate(body)
+         source_in, engine_id, dev_mode, radius_km, cross_border) = _validate(body)
     except ValidationError as e:
         return jsonify({"status": "error", "code": e.code, "message": e.message}), 400
+    same_country = not cross_border
 
     try:
         engine = manager.get(engine_id, protect={engine_id})
@@ -667,12 +692,13 @@ def decide():
         cands, source = candidates_in, source_in or "osm"
     else:
         try:
-            cands, source = get_candidates(location, radius_km=radius_km)
+            cands, source = get_candidates(location, radius_km=radius_km, same_country=same_country)
         except PlacesUnavailable as exc:
             return _places_unavailable_response(exc, radius_km)
         except LocationRequired:
             return _location_required_response()
     cands = with_colors(cands)
+    country = _country_for_response(location, same_country)
 
     combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])
     filtered, exclusions = apply_guards(combined_text, cands)
@@ -684,6 +710,7 @@ def decide():
                         "raw_top": None, "fallback_from": None, "latency_ms": 0.0}
         payload = _match_payload(winner, [{**winner, "probability": 1.0}], "only_option", 1.0,
                                   source, cands, round_num, t0, engine_meta)
+        payload["country"] = country
         if dev_mode:
             # Normally this path skips scoring entirely - the outcome is
             # forced regardless of what any engine says. Dev Mode is the one
@@ -730,6 +757,7 @@ def decide():
                                    asked_dims, engine_meta, t0)
     except ValueError as exc:
         return jsonify({"status": "error", "code": "MODEL_ERROR", "message": str(exc)}), 500
+    payload["country"] = country
 
     if dev_mode:
         winner_id = payload.get("winner", {}).get("id")

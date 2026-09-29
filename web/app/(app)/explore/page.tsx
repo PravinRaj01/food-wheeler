@@ -6,6 +6,7 @@ import Link from "next/link";
 import { MapPin } from "lucide-react";
 import { listPlaces } from "@/lib/api";
 import { useLocation } from "@/lib/location/location-provider";
+import { isCrossBorderEnabled } from "@/lib/cross-border";
 import { cn } from "@/lib/utils";
 import type { Place } from "@/lib/decide/types";
 import { DEFAULT_RADIUS_KM } from "@/lib/decide/types";
@@ -57,6 +58,7 @@ export default function ExplorePage() {
     listPlaces(loc.location, radiusKm, {
       cuisine: selectedCuisine?.needles.length ? selectedCuisine.needles.join(",") : undefined,
       diet: diet ?? undefined,
+      crossBorder: isCrossBorderEnabled(),
     })
       .then((res) => {
         if (cancelled) return;

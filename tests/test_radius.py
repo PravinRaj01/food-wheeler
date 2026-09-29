@@ -17,6 +17,14 @@ import candidates  # noqa: E402
 from engines import EngineManager  # noqa: E402
 from fakes import FakeEngine  # noqa: E402
 
+# Captured before the autouse fixture below replaces candidates.detect_country
+# module-wide - the tests that exercise detect_country()'s own real logic
+# call this directly instead. A plain function reference still looks up
+# _query_overpass_endpoint (and everything else) in the candidates module's
+# namespace at call time, so patch.object(candidates, "_query_overpass_endpoint", ...)
+# still takes effect through it exactly as it would through the live name.
+_real_detect_country = candidates.detect_country
+
 
 def _fake_place(id_, distance_km, cuisine="Mexican"):
     return {
@@ -29,8 +37,32 @@ def _fake_place(id_, distance_km, cuisine="Mexican"):
 @pytest.fixture(autouse=True)
 def clear_cache():
     candidates._cache.clear()
+    candidates._country_cache.clear()
     yield
     candidates._cache.clear()
+    candidates._country_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_real_country_detection(monkeypatch):
+    # get_candidates()/list_places() default to same_country=True, which
+    # calls detect_country() before every fetch - without this, every test
+    # below would make a REAL Overpass call for country detection (slow,
+    # flaky, and exactly the live-network-in-tests problem this suite
+    # otherwise avoids). Returning None matches this suite's existing
+    # fixtures/expectations exactly: it's the same "couldn't determine it"
+    # fallback get_candidates() already has to handle in production, which
+    # runs country_iso=None through _fetch_overpass() - i.e. the identical
+    # query every test here was already written against.
+    #
+    # Two names, not one: app.py did `from candidates import detect_country`,
+    # which copies a reference into app.py's OWN module namespace at import
+    # time - patching candidates.detect_country never touches that copy, so
+    # this file's Flask-route tests (which go through app.py's
+    # _country_for_response) need app.detect_country patched too.
+    monkeypatch.setattr(candidates, "detect_country", lambda lat, lng, timeout_s=6: None)
+    monkeypatch.setattr(app_module, "detect_country", lambda lat, lng, timeout_s=6: None)
+    yield
 
 
 # --- clamp_radius_km / _radius_params ---------------------------------------
@@ -109,12 +141,75 @@ def test_fetch_overpass_returns_none_when_every_mirror_fails():
     assert results is None
 
 
+def test_fetch_overpass_adds_a_country_area_filter_when_given():
+    seen_queries = []
+
+    def fake_query(endpoint, query, headers, http_timeout_s):
+        seen_queries.append(query)
+        return {"elements": []}
+
+    with patch.object(candidates, "_query_overpass_endpoint", side_effect=fake_query):
+        candidates._fetch_overpass(1.0, 1.0, 1000, timeout_s=8, result_cap=50, country_iso="MY")
+    assert any('area["ISO3166-1:alpha2"="MY"]' in q and "(area.country)" in q for q in seen_queries)
+
+
+def test_fetch_overpass_has_no_area_filter_by_default():
+    seen_queries = []
+
+    def fake_query(endpoint, query, headers, http_timeout_s):
+        seen_queries.append(query)
+        return {"elements": []}
+
+    with patch.object(candidates, "_query_overpass_endpoint", side_effect=fake_query):
+        candidates._fetch_overpass(1.0, 1.0, 1000, timeout_s=8, result_cap=50)
+    assert all("ISO3166-1" not in q and "area.country" not in q for q in seen_queries)
+
+
+# --- detect_country ------------------------------------------------------------
+
+def test_detect_country_extracts_the_iso_code_from_the_area_element():
+    def fake_query(endpoint, query, headers, http_timeout_s):
+        return {"elements": [{"type": "area", "tags": {"ISO3166-1:alpha2": "my", "boundary": "administrative"}}]}
+
+    with patch.object(candidates, "_query_overpass_endpoint", side_effect=fake_query):
+        country = _real_detect_country(1.4215, 103.659)
+    assert country == "MY"  # upper-cased regardless of how OSM tagged it
+
+
+def test_detect_country_returns_none_when_no_mirror_has_area_data():
+    with patch.object(candidates, "_query_overpass_endpoint", return_value={"elements": []}):
+        country = _real_detect_country(1.4215, 103.659)
+    assert country is None
+
+
+def test_detect_country_returns_none_when_every_mirror_fails():
+    with patch.object(candidates, "_query_overpass_endpoint", return_value=None):
+        country = _real_detect_country(1.4215, 103.659)
+    assert country is None
+
+
+def test_detect_country_is_cached_across_calls():
+    calls = []
+
+    def fake_query(endpoint, query, headers, http_timeout_s):
+        calls.append(1)
+        return {"elements": [{"type": "area", "tags": {"ISO3166-1:alpha2": "MY"}}]}
+
+    with patch.object(candidates, "_query_overpass_endpoint", side_effect=fake_query):
+        first = _real_detect_country(1.4215, 103.659)
+        second = _real_detect_country(1.4215, 103.659)
+    assert first == second == "MY"
+    # Every mirror is raced on the first call; none should fire again on the
+    # second now that it's cached.
+    assert len(calls) == len(candidates.OVERPASS_ENDPOINTS)
+
+
 # --- get_candidates ----------------------------------------------------------
 
 def test_get_candidates_uses_the_given_radius_in_meters():
     calls = []
 
-    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap):
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
         calls.append(radius_m)
         return [_fake_place(f"p{i}", i * 0.5, cuisine=f"C{i}") for i in range(10)]
 
@@ -125,8 +220,49 @@ def test_get_candidates_uses_the_given_radius_in_meters():
     assert calls[0] == 5000
 
 
+def test_get_candidates_passes_the_detected_country_into_the_fetch():
+    seen_country = []
+
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        seen_country.append(country_iso)
+        return [_fake_place(f"p{i}", i * 0.5, cuisine=f"C{i}") for i in range(10)]
+
+    with patch.object(candidates, "detect_country", return_value="MY"), \
+         patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch):
+        candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+
+    assert seen_country[0] == "MY"
+
+
+def test_get_candidates_same_country_false_never_calls_detect_country():
+    with patch.object(candidates, "detect_country") as mock_detect, \
+         patch.object(candidates, "_fetch_overpass", return_value=[_fake_place("a", 1.0)]):
+        candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5, same_country=False)
+
+    mock_detect.assert_not_called()
+
+
+def test_get_candidates_falls_back_to_unfiltered_when_country_cant_be_detected():
+    # detect_country() returning None (couldn't determine it) must still
+    # search - never LocationRequired/PlacesUnavailable just because
+    # detection itself failed.
+    seen_country = []
+
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        seen_country.append(country_iso)
+        return [_fake_place("a", 1.0)]
+
+    with patch.object(candidates, "detect_country", return_value=None), \
+         patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch):
+        cands, source = candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+
+    assert seen_country[0] is None
+    assert source == "osm"
+    assert len(cands) == 1
+
+
 def test_get_candidates_extends_past_the_old_15km_cap():
-    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap):
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
         return [_fake_place(f"p{i}", i, cuisine=f"C{i}") for i in range(12)]
 
     with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch) as mock_fetch:
@@ -137,7 +273,7 @@ def test_get_candidates_extends_past_the_old_15km_cap():
 
 
 def test_out_of_range_radius_clamps_instead_of_erroring():
-    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap):
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
         return [_fake_place(f"p{i}", i, cuisine=f"C{i}") for i in range(10)]
 
     with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch) as mock_fetch:
@@ -149,7 +285,7 @@ def test_out_of_range_radius_clamps_instead_of_erroring():
 def test_small_radius_widens_on_sparse_results():
     call_radii = []
 
-    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap):
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
         call_radii.append(radius_m)
         # First (1.5km) call returns too few; second (3km, the 2x widen) returns enough.
         return [_fake_place(f"p{i}", i, cuisine=f"C{i}") for i in range(2 if radius_m == 1500 else 8)]
@@ -164,7 +300,7 @@ def test_small_radius_widens_on_sparse_results():
 def test_large_radius_does_not_retry_wider_on_sparse_results():
     call_radii = []
 
-    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap):
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
         call_radii.append(radius_m)
         return [_fake_place(f"p{i}", i, cuisine=f"C{i}") for i in range(2)]  # always sparse
 
@@ -211,7 +347,7 @@ def test_get_candidates_filters_out_of_radius_results():
     # side, but the defensive client-side filter must catch a stray result
     # outside the requested radius too - this is the exact bug that put a
     # "15317 km away" mock result in front of a real user.
-    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap):
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
         return [_fake_place("near", 2.0), _fake_place("far", 200.0)]
 
     with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch):
@@ -308,6 +444,22 @@ def test_list_places_accepts_a_large_radius():
     assert mock_fetch.call_args[0][2] == 40000  # radius_m
 
 
+def test_list_places_passes_the_detected_country_into_the_fetch():
+    results = [_fake_place("a", 1.0)]
+    with patch.object(candidates, "detect_country", return_value="MY"), \
+         patch.object(candidates, "_fetch_for_radius", return_value=results) as mock_fetch:
+        candidates.list_places({"lat": 1, "lng": 1}, radius_km=5)
+    assert mock_fetch.call_args.kwargs["country_iso"] == "MY"
+
+
+def test_list_places_same_country_false_never_calls_detect_country():
+    results = [_fake_place("a", 1.0)]
+    with patch.object(candidates, "detect_country") as mock_detect, \
+         patch.object(candidates, "_fetch_for_radius", return_value=results):
+        candidates.list_places({"lat": 1, "lng": 1}, radius_km=5, same_country=False)
+    mock_detect.assert_not_called()
+
+
 # --- Flask routes ------------------------------------------------------------
 
 @pytest.fixture
@@ -402,3 +554,82 @@ def test_decide_defaults_radius_km_when_missing(client):
          patch("app.get_candidates", return_value=(fixed_cands, "osm")) as mock_get:
         client.post("/api/decide", json={"partner1": {"text": "x"}, "partner2": {"text": "y"}})
     assert mock_get.call_args.kwargs["radius_km"] == candidates.DEFAULT_RADIUS_KM
+
+
+def test_decide_defaults_to_same_country(client):
+    engine_a = FakeEngine("engine_a", est_ram_mb=100)
+    engine_a._probabilities = {"a": 0.9}
+    mgr = EngineManager([engine_a], default_id="engine_a")
+    fixed_cands = [
+        {"id": "a", "name": "Casa Fuego", "cuisine": "Mexican", "tags": [], "price": "$$",
+         "lat": 1.0, "lng": 1.0, "address": "x", "distance_km": 0.5,
+         "dims": {"service": "sit_down", "spice": "hot", "setting": "patio", "price": "mid", "diet": "none"}},
+    ]
+    with patch.object(app_module, "manager", mgr), \
+         patch("app.get_candidates", return_value=(fixed_cands, "osm")) as mock_get:
+        client.post("/api/decide", json={"partner1": {"text": "x"}, "partner2": {"text": "y"}})
+    assert mock_get.call_args.kwargs["same_country"] is True
+
+
+def test_decide_cross_border_true_disables_same_country(client):
+    engine_a = FakeEngine("engine_a", est_ram_mb=100)
+    engine_a._probabilities = {"a": 0.9}
+    mgr = EngineManager([engine_a], default_id="engine_a")
+    fixed_cands = [
+        {"id": "a", "name": "Casa Fuego", "cuisine": "Mexican", "tags": [], "price": "$$",
+         "lat": 1.0, "lng": 1.0, "address": "x", "distance_km": 0.5,
+         "dims": {"service": "sit_down", "spice": "hot", "setting": "patio", "price": "mid", "diet": "none"}},
+    ]
+    with patch.object(app_module, "manager", mgr), \
+         patch("app.get_candidates", return_value=(fixed_cands, "osm")) as mock_get:
+        client.post(
+            "/api/decide",
+            json={"partner1": {"text": "x"}, "partner2": {"text": "y"}, "cross_border": True},
+        )
+    assert mock_get.call_args.kwargs["same_country"] is False
+
+
+def test_decide_response_includes_country(client):
+    engine_a = FakeEngine("engine_a", est_ram_mb=100)
+    engine_a._probabilities = {"a": 0.9}
+    mgr = EngineManager([engine_a], default_id="engine_a")
+    fixed_cands = [
+        {"id": "a", "name": "Casa Fuego", "cuisine": "Mexican", "tags": [], "price": "$$",
+         "lat": 1.0, "lng": 1.0, "address": "x", "distance_km": 0.5,
+         "dims": {"service": "sit_down", "spice": "hot", "setting": "patio", "price": "mid", "diet": "none"}},
+    ]
+    with patch.object(app_module, "manager", mgr), \
+         patch("app.get_candidates", return_value=(fixed_cands, "osm")), \
+         patch("app.detect_country", return_value="MY"):
+        resp = client.post(
+            "/api/decide",
+            json={"partner1": {"text": "x"}, "partner2": {"text": "y"}, "location": {"lat": 1.4, "lng": 103.6}},
+        )
+    assert resp.get_json()["country"] == "MY"
+
+
+def test_places_route_defaults_to_same_country(client):
+    with patch("app.list_places", return_value=([_fake_place("a", 1.0)], "osm")) as mock_list:
+        client.get("/api/places?lat=1&lng=1&radius_km=5")
+    assert mock_list.call_args.kwargs["same_country"] is True
+
+
+def test_places_route_cross_border_1_disables_same_country(client):
+    with patch("app.list_places", return_value=([_fake_place("a", 1.0)], "osm")) as mock_list:
+        client.get("/api/places?lat=1&lng=1&radius_km=5&cross_border=1")
+    assert mock_list.call_args.kwargs["same_country"] is False
+
+
+def test_places_route_cross_border_0_does_not_disable_same_country(client):
+    # The classic Flask/Python trap: bool("0") is True. ?cross_border=0 must
+    # not accidentally turn cross-border ON.
+    with patch("app.list_places", return_value=([_fake_place("a", 1.0)], "osm")) as mock_list:
+        client.get("/api/places?lat=1&lng=1&radius_km=5&cross_border=0")
+    assert mock_list.call_args.kwargs["same_country"] is True
+
+
+def test_places_route_response_includes_country(client):
+    with patch("app.list_places", return_value=([_fake_place("a", 1.0)], "osm")), \
+         patch("app.detect_country", return_value="SG"):
+        resp = client.get("/api/places?lat=1.35&lng=103.8&radius_km=5")
+    assert resp.get_json()["country"] == "SG"

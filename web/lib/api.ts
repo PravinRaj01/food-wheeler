@@ -92,7 +92,7 @@ export function apiUrl(path: string) {
 export async function listPlaces(
   location: Location | null,
   radiusKm: number,
-  filters?: { cuisine?: string; diet?: string },
+  filters?: { cuisine?: string; diet?: string; crossBorder?: boolean },
   signal?: AbortSignal,
 ): Promise<PlacesResponse> {
   const params = new URLSearchParams({ radius_km: String(radiusKm) });
@@ -102,6 +102,7 @@ export async function listPlaces(
   }
   if (filters?.cuisine) params.set("cuisine", filters.cuisine);
   if (filters?.diet) params.set("diet", filters.diet);
+  if (filters?.crossBorder) params.set("cross_border", "1");
 
   const res = await fetch(`${API_URL}/api/places?${params.toString()}`, {
     signal: withTimeout(signal, TIMEOUT_MS.listPlaces),

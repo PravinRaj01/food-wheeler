@@ -67,6 +67,17 @@ def mock_candidates():
         yield
 
 
+@pytest.fixture(autouse=True)
+def no_real_country_detection():
+    # decide()'s response includes `country`, looked up via app.py's own
+    # imported `detect_country` name (not candidates.detect_country - see
+    # test_radius.py's fixture of the same name for why that distinction
+    # matters) - without this, every test below would make a REAL Overpass
+    # call. None matches production's own "couldn't determine it" fallback.
+    with patch("app.detect_country", return_value=None):
+        yield
+
+
 def _post(client, **body):
     return client.post("/api/decide", json=body)
 

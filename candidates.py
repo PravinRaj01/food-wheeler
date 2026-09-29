@@ -23,6 +23,11 @@ OVERPASS_ENDPOINTS = [
 CACHE_TTL_S = 6 * 60 * 60  # restaurants don't move; a long TTL means a
 # widened/prefetched radius during typing is very likely still warm by the
 # time "Find our table" actually calls get_candidates() with the same key.
+COUNTRY_CACHE_TTL_S = 30 * 24 * 60 * 60  # countries don't move either, and
+# this is an extra round-trip on top of the actual places search - cache it
+# hard. Keyed at ~11km precision (round(lat/lng, 1)), which is plenty for a
+# country boundary except within a few km of a border - a real edge case,
+# not one worth a second network round-trip per request to avoid.
 MIN_RESULTS_BEFORE_WIDEN = 5
 MIN_RESULTS_BEFORE_FALLBACK = 3
 # A client-side safety net against a stray out-of-circle result (Overpass's
@@ -74,7 +79,8 @@ PRICE_TIER_MAX = {"$": 15, "$$": 30, "$$$": 60}
 # match the premium dark theme rather than a bright rainbow palette.
 SLICE_COLORS = ["#c9a15a", "#3f6b66", "#8c4a4a", "#556080", "#7a8450", "#b5674a"]
 
-_cache: dict[tuple[float, float, int], tuple[float, list[dict]]] = {}
+_cache: dict[tuple, tuple[float, list[dict]]] = {}
+_country_cache: dict[tuple[float, float], tuple[float, str | None]] = {}
 
 # Fixture venues for tests and scripts/compare_engines.py only - production
 # get_candidates()/list_places() never return these (see LocationRequired).
@@ -254,12 +260,75 @@ def _query_overpass_endpoint(endpoint: str, query: str, headers: dict, http_time
         return None
 
 
-def _fetch_overpass(lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int) -> list[dict] | None:
+def detect_country(lat: float, lng: float, timeout_s: int = 6) -> str | None:
+    """Best-effort ISO3166-1 alpha-2 country code for a point, via Overpass's
+    own is_in()/area idiom - the same trick most "reverse geocode with
+    Overpass" tools use, so it needs no separate geocoding service or key.
+    Cached hard (see COUNTRY_CACHE_TTL_S) since this runs before every
+    same-country places search, on top of the search itself.
+
+    Returns None if no mirror could determine it - a mirror without is_in
+    support, a slow/failed request, or a point outside any mapped
+    admin_level=2 boundary. Callers treat that as "couldn't verify", not
+    "no country": get_candidates()/list_places() fall back to an unfiltered
+    search rather than showing nothing just because detection failed."""
+    cache_key = (round(lat, 1), round(lng, 1))
+    cached = _country_cache.get(cache_key)
+    if cached and time.time() - cached[0] < COUNTRY_CACHE_TTL_S:
+        return cached[1]
+
     query = f"""
     [out:json][timeout:{timeout_s}];
-    (
-      node["amenity"~"^(restaurant|fast_food|cafe)$"]["name"](around:{radius_m},{lat},{lng});
-      way["amenity"~"^(restaurant|fast_food|cafe)$"]["name"](around:{radius_m},{lat},{lng});
+    is_in({lat},{lng})->.here;
+    area.here["boundary"="administrative"]["admin_level"="2"]->.country;
+    .country out tags;
+    """
+    headers = {"User-Agent": "food-wheeler/1.0 (educational prototype)"}
+    http_timeout_s = timeout_s + 5
+
+    executor = ThreadPoolExecutor(max_workers=len(OVERPASS_ENDPOINTS))
+    futures = {
+        executor.submit(_query_overpass_endpoint, ep, query, headers, http_timeout_s): ep
+        for ep in OVERPASS_ENDPOINTS
+    }
+    country = None
+    try:
+        for fut in as_completed(futures):
+            data = fut.result()
+            if data is None:
+                continue
+            for el in data.get("elements", []):
+                tags = el.get("tags", {})
+                code = tags.get("ISO3166-1:alpha2") or tags.get("ISO3166-1")
+                if code:
+                    country = code.upper()
+                    break
+            if country:
+                break
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    _country_cache[cache_key] = (time.time(), country)
+    return country
+
+
+def _fetch_overpass(
+    lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int, country_iso: str | None = None
+) -> list[dict] | None:
+    # When a country is known, the area it names is fetched once and both
+    # the node and way searches are additionally constrained to it - a
+    # point still has to be inside the requested radius AND that country,
+    # so a search near the Johor/Singapore border stops crossing over.
+    area_clause = ""
+    area_filter = ""
+    if country_iso:
+        area_clause = f'area["ISO3166-1:alpha2"="{country_iso}"]->.country;\n    '
+        area_filter = "(area.country)"
+    query = f"""
+    [out:json][timeout:{timeout_s}];
+    {area_clause}(
+      node["amenity"~"^(restaurant|fast_food|cafe)$"]["name"](around:{radius_m},{lat},{lng}){area_filter};
+      way["amenity"~"^(restaurant|fast_food|cafe)$"]["name"](around:{radius_m},{lat},{lng}){area_filter};
     );
     out center tags {result_cap};
     """
@@ -324,12 +393,14 @@ def _fetch_overpass(lat: float, lng: float, radius_m: int, timeout_s: int, resul
     return results
 
 
-def _fetch_for_radius(lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int) -> list[dict] | None:
-    cache_key = (round(lat, 3), round(lng, 3), radius_m)
+def _fetch_for_radius(
+    lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int, country_iso: str | None = None
+) -> list[dict] | None:
+    cache_key = (round(lat, 3), round(lng, 3), radius_m, country_iso)
     cached = _cache.get(cache_key)
     if cached and time.time() - cached[0] < CACHE_TTL_S:
         return cached[1]
-    results = _fetch_overpass(lat, lng, radius_m, timeout_s=timeout_s, result_cap=result_cap)
+    results = _fetch_overpass(lat, lng, radius_m, timeout_s=timeout_s, result_cap=result_cap, country_iso=country_iso)
     if results is not None:
         _cache[cache_key] = (time.time(), results)
     return results
@@ -339,10 +410,16 @@ def _within_radius(results: list[dict], radius_km: float) -> list[dict]:
     return [r for r in results if r.get("distance_km", 0) <= radius_km + RADIUS_FILTER_EPSILON_KM]
 
 
-def get_candidates(location: dict | None, radius_km: float = DEFAULT_RADIUS_KM) -> tuple[list[dict], str]:
+def get_candidates(
+    location: dict | None, radius_km: float = DEFAULT_RADIUS_KM, same_country: bool = True
+) -> tuple[list[dict], str]:
     """Returns (candidates, source) where source is 'osm' or 'mock'. The AI
     decision engines see only this curated, capped list - see list_places()
     for the uncurated Explore browsing list.
+
+    same_country=True (the default) keeps results inside whichever country
+    the given location is in - see detect_country(). If detection fails,
+    this silently searches unfiltered rather than returning nothing.
 
     Raises LocationRequired with no location at all, and PlacesUnavailable
     if a real location was given but nothing usable came back - see each
@@ -352,13 +429,16 @@ def get_candidates(location: dict | None, radius_km: float = DEFAULT_RADIUS_KM) 
         raise LocationRequired()
 
     lat, lng = location["lat"], location["lng"]
+    country_iso = detect_country(lat, lng) if same_country else None
     params = _radius_params(radius_km)
     radii_km = [radius_km] + ([params["widen_km"]] if params["widen_km"] else [])
 
     any_fetch_succeeded = False
     best_results: list[dict] | None = None
     for i, r_km in enumerate(radii_km):
-        results = _fetch_for_radius(lat, lng, round(r_km * 1000), params["timeout_s"], params["result_cap"])
+        results = _fetch_for_radius(
+            lat, lng, round(r_km * 1000), params["timeout_s"], params["result_cap"], country_iso=country_iso
+        )
         if results is None:
             continue
         any_fetch_succeeded = True
@@ -440,9 +520,12 @@ def list_places(
     cuisine: str | None = None,
     diet: str | None = None,
     limit: int = PLACES_LIST_LIMIT,
+    same_country: bool = True,
 ) -> tuple[list[dict], str]:
     """The Explore page's uncurated browsing list - up to `limit` places,
     nearest first, with simple cuisine/diet filters. No AI involved.
+
+    same_country behaves exactly as in get_candidates() - see its docstring.
 
     Raises LocationRequired with no location at all, and PlacesUnavailable
     on the same terms as get_candidates() - see each class's docstring."""
@@ -452,8 +535,11 @@ def list_places(
         raise LocationRequired()
 
     lat, lng = location["lat"], location["lng"]
+    country_iso = detect_country(lat, lng) if same_country else None
     params = _radius_params(radius_km)
-    fetched = _fetch_for_radius(lat, lng, round(radius_km * 1000), params["timeout_s"], params["result_cap"])
+    fetched = _fetch_for_radius(
+        lat, lng, round(radius_km * 1000), params["timeout_s"], params["result_cap"], country_iso=country_iso
+    )
     if fetched is None:
         raise PlacesUnavailable("fetch")
     fetched = _within_radius(fetched, radius_km)

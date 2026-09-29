@@ -14,6 +14,7 @@ import { useLocation } from "@/lib/location/location-provider";
 import { useOnline } from "@/lib/hooks/use-online";
 import { useToast } from "@/lib/hooks/use-toast";
 import { isDevModeEnabled } from "@/lib/dev-mode";
+import { isCrossBorderEnabled } from "@/lib/cross-border";
 import { local, session } from "@/lib/safe-storage";
 import { getCurrentUserId } from "@/lib/actions/user";
 import { enqueueDecision } from "@/lib/sync/outbox";
@@ -236,7 +237,7 @@ export default function DecidePage() {
     if (loc.status !== "granted" || !loc.location) return;
     if (state.phase !== "input") return;
     const handle = setTimeout(() => {
-      listPlaces(loc.location, state.radiusKm).catch(() => {});
+      listPlaces(loc.location, state.radiusKm, { crossBorder: isCrossBorderEnabled() }).catch(() => {});
     }, 800);
     return () => clearTimeout(handle);
   }, [loc.status, loc.location, state.radiusKm, state.phase]);
@@ -284,6 +285,7 @@ export default function DecidePage() {
         tiebreakers: overrides?.tiebreakers ?? state.tiebreakers,
         round: overrides?.round ?? state.round,
         radius_km: state.radiusKm,
+        cross_border: isCrossBorderEnabled(),
       };
       try {
         const res = await decide(body);
