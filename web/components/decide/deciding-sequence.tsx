@@ -180,12 +180,22 @@ export function DecidingSequence({
   const slotCount = pendingResult ? Math.max(candidates.length, 1) : 3;
   const step = STEPS[stepIndex];
   const StepIcon = step.icon;
+  const searchCenter = pendingResult?.response.search_center;
 
   return (
     <div role="status" aria-live="polite" className="flex flex-col items-center gap-4 py-10 text-center">
       {/* Screen-reader summary of what each partner said - the pills below
           are the visual version, kept deliberately compact. */}
       <p className="sr-only">{decidingIntro(p1Name, p2Name, p1Snippet, p2Snippet)}</p>
+
+      {searchCenter && (
+        <p className="text-xs text-cream/50">
+          Searching near {searchCenter.name} —{" "}
+          {(searchCenter.mentioned_by === "p2" ? p2Name : p1Name) ||
+            (searchCenter.mentioned_by === "p2" ? "Partner Two" : "Partner One")}
+          &apos;s idea
+        </p>
+      )}
 
       {/* The two sealed cards fly together and shrink into these pills -
           each shares its layoutId with PartnerCardCollapsed (see

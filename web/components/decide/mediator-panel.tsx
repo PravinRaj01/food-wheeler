@@ -7,6 +7,7 @@ import {
   Flame,
   Gem,
   Home,
+  MapPin,
   Milk,
   Salad,
   Sprout,
@@ -25,13 +26,17 @@ import { DevComparison } from "@/components/decide/dev-comparison";
 // (dimension id, answer) pair maps to its own lucide icon here instead. A
 // cuisine question's `answer` is an arbitrary string ("Thai", "Mexican", …)
 // decided at request time, so it falls through to the generic fork-and-
-// knife icon rather than getting its own entry.
+// knife icon rather than getting its own entry. "location" (see app.py's
+// build_location_question) has an arbitrary `answer` too ("p1"/"p2"), but
+// both of its options mean the same thing - somewhere to search - so they
+// share one icon rather than falling through to the generic one.
 const OPTION_ICONS: Record<string, Record<string, LucideIcon>> = {
   service: { fast_food: Zap, sit_down: UtensilsCrossed },
   spice: { hot: Flame, mild: Milk },
   setting: { patio: Trees, indoor: Home },
   price: { low: Coins, mid: Wallet, high: Gem },
   diet: { vegan: Sprout, vegetarian: Salad, halal: BadgeCheck, gluten_free: Wheat, none: Utensils },
+  location: { p1: MapPin, p2: MapPin },
 };
 
 function optionIcon(dimensionId: string, answer: string): LucideIcon {

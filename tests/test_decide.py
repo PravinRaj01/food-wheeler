@@ -17,6 +17,14 @@ from candidates import LocationRequired, PlacesUnavailable  # noqa: E402
 from engines import EngineManager  # noqa: E402
 from fakes import FakeEngine  # noqa: E402
 
+# Captured before the no_real_geocoding autouse fixture below replaces
+# app.resolve_location_mention module-wide - the tests that exercise its own
+# real logic call this directly instead. Same trick as test_radius.py's
+# _real_detect_country/_real_route_table: a plain function reference still
+# looks up app.requests.get in the module's own namespace at call time, so
+# patch("app.requests.get", ...) still takes effect through it.
+_real_resolve_location_mention = app_module.resolve_location_mention
+
 FIXED_CANDS = [
     {"id": "a", "name": "Casa Fuego", "cuisine": "Mexican", "tags": ["spicy", "patio"],
      "price": "$$", "lat": 1.0, "lng": 1.0, "address": "x", "distance_km": 0.5,
@@ -78,6 +86,25 @@ def no_real_country_detection():
         yield
 
 
+@pytest.fixture(autouse=True)
+def no_real_geocoding():
+    # None of today's fixture texts happen to trip extract_location_mentions
+    # (verified by hand), but this is a defensive backstop against a REAL
+    # Nominatim call all the same, matching the same "never hit a live
+    # service from this suite" convention as detect_country/routing/Overture
+    # above. Tests that exercise the real geocoding path patch
+    # app.resolve_location_mention (or requests.get underneath it) directly.
+    with patch("app.resolve_location_mention", return_value=None):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def clear_geocode_cache():
+    app_module._geocode_cache.clear()
+    yield
+    app_module._geocode_cache.clear()
+
+
 def _post(client, **body):
     return client.post("/api/decide", json=body)
 
@@ -121,6 +148,194 @@ def test_decide_does_not_re_detect_cuisine_preference_for_trusted_candidates_in(
         )
     assert resp.status_code == 200
     mock_get.assert_not_called()
+
+
+# --- location mentions ("near Mid Valley") ----------------------------------
+
+def test_extract_location_mentions_detects_a_near_phrase():
+    assert app_module.extract_location_mentions("something near Mid Valley please") == ["mid valley"]
+
+
+def test_extract_location_mentions_detects_somewhere_in_phrasing():
+    assert app_module.extract_location_mentions("somewhere in Bukit Indah") == ["bukit indah"]
+
+
+def test_extract_location_mentions_ignores_a_mood_not_a_place():
+    assert app_module.extract_location_mentions("I'm in the mood for something spicy") == []
+
+
+def test_extract_location_mentions_ignores_a_mentioned_cuisine():
+    assert app_module.extract_location_mentions("in indian food") == []
+
+
+def test_extract_location_mentions_ignores_a_mentioned_diet():
+    assert app_module.extract_location_mentions("something in halal") == []
+
+
+def test_extract_location_mentions_ignores_a_budget_word():
+    assert app_module.extract_location_mentions("in cheap") == []
+
+
+def test_extract_location_mentions_returns_empty_for_plain_text():
+    assert app_module.extract_location_mentions("anything is fine") == []
+
+
+def test_extract_location_mentions_caps_at_two_words():
+    # "Sunway Pyramid Mall" is cut to "sunway pyramid" - a documented
+    # trade-off (see the function's own docstring), not a bug: Nominatim's
+    # fuzzy search usually still resolves the truncated phrase.
+    assert app_module.extract_location_mentions("near Sunway Pyramid Mall tonight") == ["sunway pyramid"]
+
+
+def test_same_place_true_within_threshold():
+    a = {"name": "A", "lat": 1.0, "lng": 1.0}
+    b = {"name": "B", "lat": 1.001, "lng": 1.0}
+    assert app_module._same_place(a, b) is True
+
+
+def test_same_place_false_beyond_threshold():
+    a = {"name": "A", "lat": 1.0, "lng": 1.0}
+    b = {"name": "B", "lat": 1.1, "lng": 1.0}
+    assert app_module._same_place(a, b) is False
+
+
+def test_resolve_location_mention_rejects_a_result_too_far_away():
+    far_result = [{"lat": "50.0", "lon": "50.0", "display_name": "Nowhere Near"}]
+    with patch("app.requests.get") as mock_get:
+        mock_get.return_value.raise_for_status = lambda: None
+        mock_get.return_value.json.return_value = far_result
+        place = _real_resolve_location_mention("nowhere near", 1.0, 1.0, "MY")
+    assert place is None
+
+
+def test_resolve_location_mention_accepts_a_result_within_range():
+    near_result = [{"lat": "1.05", "lon": "1.05", "display_name": "Mid Valley, Some City"}]
+    with patch("app.requests.get") as mock_get:
+        mock_get.return_value.raise_for_status = lambda: None
+        mock_get.return_value.json.return_value = near_result
+        place = _real_resolve_location_mention("mid valley", 1.0, 1.0, "MY")
+    assert place == {"name": "Mid Valley", "lat": 1.05, "lng": 1.05}
+
+
+def test_resolve_location_mention_returns_none_on_request_failure():
+    with patch("app.requests.get", side_effect=app_module.requests.RequestException("boom")):
+        place = _real_resolve_location_mention("mid valley", 1.0, 1.0, "MY")
+    assert place is None
+
+
+def test_decide_uses_a_single_mentioned_place_as_the_search_center(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    mentioned = {"name": "Mid Valley", "lat": 1.05, "lng": 1.05}
+    with patch("app.resolve_location_mention", return_value=mentioned), \
+         patch("app.get_candidates", return_value=(FIXED_CANDS, "overture")) as mock_get:
+        _post(
+            client,
+            partner1={"text": "something near Mid Valley"}, partner2={"text": "anything's fine"},
+            location={"lat": 1.0, "lng": 1.0},
+        )
+    # search_center adds a "mentioned_by" key on top of the resolved place,
+    # so this checks the coordinates rather than exact dict equality.
+    fetch_loc = mock_get.call_args.args[0]
+    assert (fetch_loc["lat"], fetch_loc["lng"]) == (mentioned["lat"], mentioned["lng"])
+    assert mock_get.call_args.kwargs.get("route_from") == {"lat": 1.0, "lng": 1.0}
+
+
+def test_decide_ignores_a_mention_close_to_the_user(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    close_mention = {"name": "Right Here Mall", "lat": 1.001, "lng": 1.0}
+    with patch("app.resolve_location_mention", return_value=close_mention), \
+         patch("app.get_candidates", return_value=(FIXED_CANDS, "overture")) as mock_get:
+        _post(
+            client,
+            partner1={"text": "something near Right Here Mall"}, partner2={"text": "anything's fine"},
+            location={"lat": 1.0, "lng": 1.0},
+        )
+    assert mock_get.call_args.args[0] == {"lat": 1.0, "lng": 1.0}
+    assert mock_get.call_args.kwargs.get("route_from") is None
+
+
+def test_decide_asks_a_question_when_partners_mention_different_places(client, fake_manager):
+    place1 = {"name": "Mid Valley", "lat": 1.05, "lng": 1.05}
+    place2 = {"name": "Bukit Indah", "lat": 1.2, "lng": 1.2}
+    with patch("app.resolve_location_mention", side_effect=[place1, place2]), \
+         patch("app.get_candidates") as mock_get:
+        resp = _post(
+            client,
+            partner1={"text": "near Mid Valley"}, partner2={"text": "somewhere in Bukit Indah"},
+            location={"lat": 1.0, "lng": 1.0},
+        )
+    data = resp.get_json()
+    assert data["status"] == "tiebreaker"
+    assert data["reason"] == "location_conflict"
+    assert data["question"]["id"] == "location"
+    labels = {opt["label"] for opt in data["question"]["options"]}
+    assert labels == {"Mid Valley", "Bukit Indah"}
+    mock_get.assert_not_called()
+
+
+def test_decide_resolves_the_conflict_once_answered(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    place1 = {"name": "Mid Valley", "lat": 1.05, "lng": 1.05}
+    place2 = {"name": "Bukit Indah", "lat": 1.2, "lng": 1.2}
+    with patch("app.resolve_location_mention", side_effect=[place1, place2]), \
+         patch("app.get_candidates", return_value=(FIXED_CANDS, "overture")) as mock_get:
+        _post(
+            client,
+            partner1={"text": "near Mid Valley"}, partner2={"text": "somewhere in Bukit Indah"},
+            location={"lat": 1.0, "lng": 1.0},
+            round=1,
+            tiebreakers=[{"question_id": "location", "answer": "p2", "text": "Near Bukit Indah"}],
+        )
+    fetch_loc = mock_get.call_args.args[0]
+    assert (fetch_loc["lat"], fetch_loc["lng"]) == (place2["lat"], place2["lng"])
+
+
+def test_decide_spin_anyway_defaults_to_partner_ones_mention(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    place1 = {"name": "Mid Valley", "lat": 1.05, "lng": 1.05}
+    place2 = {"name": "Bukit Indah", "lat": 1.2, "lng": 1.2}
+    with patch("app.resolve_location_mention", side_effect=[place1, place2]), \
+         patch("app.get_candidates", return_value=(FIXED_CANDS, "overture")) as mock_get:
+        _post(
+            client,
+            partner1={"text": "near Mid Valley"}, partner2={"text": "somewhere in Bukit Indah"},
+            location={"lat": 1.0, "lng": 1.0},
+            round=2,  # "Spin anyway" without ever answering the location question
+        )
+    fetch_loc = mock_get.call_args.args[0]
+    assert (fetch_loc["lat"], fetch_loc["lng"]) == (place1["lat"], place1["lng"])
+
+
+def test_decide_response_includes_search_center(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    mentioned = {"name": "Mid Valley", "lat": 1.05, "lng": 1.05}
+    with patch("app.resolve_location_mention", return_value=mentioned), \
+         patch("app.get_candidates", return_value=(FIXED_CANDS, "overture")):
+        resp = _post(
+            client,
+            partner1={"text": "something near Mid Valley"}, partner2={"text": "anything's fine"},
+            location={"lat": 1.0, "lng": 1.0},
+        )
+    data = resp.get_json()
+    assert data["search_center"]["name"] == "Mid Valley"
+    assert data["search_center"]["mentioned_by"] == "p1"
+
+
+def test_decide_omits_search_center_when_nothing_is_mentioned(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    resp = _post(
+        client,
+        partner1={"text": "anything's fine"}, partner2={"text": "sure"},
+        location={"lat": 1.0, "lng": 1.0},
+    )
+    data = resp.get_json()
+    assert data["search_center"] is None
 
 
 def test_high_confidence_match(client, fake_manager):

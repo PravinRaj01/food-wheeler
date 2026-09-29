@@ -1,5 +1,5 @@
 import { DEFAULT_RADIUS_KM } from "@/lib/decide/types";
-import type { Candidate, EngineId, MatchResponse, Tiebreaker, TiebreakerResponse } from "@/lib/decide/types";
+import type { Candidate, EngineId, MatchResponse, SearchCenter, Tiebreaker, TiebreakerResponse } from "@/lib/decide/types";
 
 export type Phase = "names" | "input" | "submitting" | "wheel" | "mediator" | "reveal";
 /** The only phases a saved session snapshot can resume into - see
@@ -36,6 +36,10 @@ export interface DecideState {
   openCard: 1 | 2 | null;
   candidates: Candidate[] | null;
   source: "overture" | "osm" | "mock" | null;
+  /** The place a partner mentioned by name ("near Mid Valley") the search
+   * centred on, if any - echoed back to the server each round exactly like
+   * candidates/source above, and cleared whenever they are. */
+  searchCenter: SearchCenter | null;
   tiebreakers: Tiebreaker[];
   round: number;
   radiusKm: number;
@@ -100,6 +104,7 @@ export function initialState(engine: EngineId, devMode: boolean): DecideState {
     openCard: null,
     candidates: null,
     source: null,
+    searchCenter: null,
     tiebreakers: [],
     round: 0,
     radiusKm: DEFAULT_RADIUS_KM,
@@ -158,7 +163,9 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
     case "SET_ENGINE":
       return state.engineLocked ? state : { ...state, engine: action.engine };
     case "SET_RADIUS_KM":
-      return state.engineLocked ? state : { ...state, radiusKm: action.km, candidates: null, source: null };
+      return state.engineLocked
+        ? state
+        : { ...state, radiusKm: action.km, candidates: null, source: null, searchCenter: null };
     case "SEED_CANDIDATES":
       return { ...state, candidates: action.candidates, source: action.source };
     case "SET_DEV_MODE":
@@ -175,6 +182,7 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
         lastMatch: action.response,
         candidates: action.response.candidates,
         source: action.response.source,
+        searchCenter: action.response.search_center ?? null,
       };
     case "SUBMIT_TIEBREAKER":
       return {
@@ -182,7 +190,12 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
         phase: "mediator",
         lastTiebreaker: action.response,
         candidates: action.response.candidates,
-        source: action.response.source,
+        searchCenter: action.response.search_center ?? null,
+        // "n/a" marks a location_conflict question, asked before anything
+        // was ever fetched (see app.py's build_location_question) - nothing
+        // real to echo back as a source, so it's kept out of state exactly
+        // like the null it effectively means.
+        source: action.response.source === "n/a" ? null : action.response.source,
       };
     case "SUBMIT_ERROR":
       return {

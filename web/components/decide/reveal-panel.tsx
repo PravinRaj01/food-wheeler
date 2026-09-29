@@ -53,6 +53,14 @@ export function RevealPanel({
       <div className="mb-2 flex items-center gap-2">
         <p className="text-[11px] tracking-[0.15em] text-cream/40 uppercase">{REVEAL_KICKER}</p>
       </div>
+      {response.search_center && (
+        <p className="mb-2 text-xs text-cream/50">
+          Searched near {response.search_center.name} —{" "}
+          {(response.search_center.mentioned_by === "p2" ? p2Name : p1Name) ||
+            (response.search_center.mentioned_by === "p2" ? "Partner Two" : "Partner One")}
+          &apos;s idea
+        </p>
+      )}
       <div className="mb-1 flex items-start justify-between gap-3">
         <h2 className="font-display text-2xl leading-tight text-cream">{w.name}</h2>
         <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--ember)_18%,transparent)] px-2.5 py-1 text-[11px] font-medium whitespace-nowrap text-ember">

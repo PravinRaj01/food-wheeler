@@ -282,6 +282,7 @@ export default function DecidePage() {
         location: overrides && "location" in overrides ? (overrides.location ?? null) : loc.location,
         candidates: state.candidates,
         source: state.source,
+        search_center: state.searchCenter,
         tiebreakers: overrides?.tiebreakers ?? state.tiebreakers,
         round: overrides?.round ?? state.round,
         radius_km: state.radiusKm,

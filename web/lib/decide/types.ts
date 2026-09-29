@@ -91,6 +91,18 @@ export interface Location {
   accuracy_m?: number;
 }
 
+/** A place a partner mentioned by name ("near Mid Valley") that the search
+ * centred on instead of the couple's own position - see app.py's
+ * extract_location_mentions/resolve_location_mention. Driving distance on
+ * every candidate is still measured from the couple's own location, never
+ * from here - see candidates.get_candidates's route_from. */
+export interface SearchCenter {
+  name: string;
+  lat: number;
+  lng: number;
+  mentioned_by: "p1" | "p2";
+}
+
 export interface DecideRequest {
   engine: EngineId;
   dev_mode: boolean;
@@ -99,6 +111,7 @@ export interface DecideRequest {
   location: Location | null;
   candidates: Candidate[] | null;
   source: "overture" | "osm" | "mock" | null;
+  search_center: SearchCenter | null;
   tiebreakers: Tiebreaker[];
   round: number;
   radius_km: number;
@@ -123,21 +136,26 @@ export interface MatchResponse {
    * candidates.detect_country(). Purely informational; nothing in the
    * frontend currently reads it. */
   country?: string | null;
+  search_center?: SearchCenter | null;
 }
 
 export interface TiebreakerResponse {
   status: "tiebreaker";
-  reason: "low_confidence" | "exact_tie";
+  // "location_conflict": the partners named two different places to search
+  // around - see app.py's build_location_question. contenders/candidates
+  // are empty in that case, since nothing's been fetched yet.
+  reason: "low_confidence" | "exact_tie" | "location_conflict";
   confidence: number;
   round: number;
   rounds_left: number;
   question: MediatorQuestion;
   contenders: RankingRow[];
   candidates: Candidate[];
-  source: "overture" | "osm" | "mock";
+  source: "overture" | "osm" | "mock" | "n/a";
   engine: EngineMeta;
   comparison?: Record<string, ComparisonEntry>;
   country?: string | null;
+  search_center?: SearchCenter | null;
 }
 
 export interface ErrorResponse {

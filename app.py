@@ -29,10 +29,11 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+import requests
 from flask import Flask, jsonify, request
 
 from candidates import (
-    DEFAULT_RADIUS_KM, PRICE_TIER_MAX, LocationRequired, PlacesUnavailable,
+    CUISINE_NEEDLES, DEFAULT_RADIUS_KM, PRICE_TIER_MAX, LocationRequired, PlacesUnavailable,
     clamp_radius_km, detect_country, detect_cuisine_preference, effective_km, get_candidates, haversine_km,
     list_places, with_colors,
 )
@@ -322,6 +323,124 @@ def apply_guards(combined_text: str, cands: list[dict]) -> tuple[list[dict], set
 
 
 # ---------------------------------------------------------------------------
+# Location mentions ("near Mid Valley", "somewhere in Bukit Indah") - lets a
+# partner steer WHERE the search happens, not just what kind of place.
+# Detection is deterministic, like the budget/diet/exclusion guards above;
+# resolution is a real geocode lookup via Nominatim (OpenStreetMap's free
+# search API, no key) - the bundled Overture dataset in candidates.py only
+# covers restaurants/cafes, not malls or neighbourhoods, so it can't serve
+# as a source for this the way the original plan for it assumed.
+# ---------------------------------------------------------------------------
+_LOCATION_PREPOSITION_RE = re.compile(
+    r"\b(?:near|around|close to|somewhere in|in|at|by)\s+"
+    r"([a-z][a-z0-9'-]*(?:\s+[a-z][a-z0-9'-]*)?)",
+    re.IGNORECASE,
+)
+# Words that make the captured phrase a mood or a vague notion of
+# "somewhere", not a real place - "in THE MOOD", "in A HURRY" and similar
+# would otherwise get geocoded as nonsense.
+_LOCATION_SKIP_WORDS = {"mood", "hurry", "rush", "town", "area", "here", "there", "mind"}
+GEOCODE_MAX_KM = 60  # a same-named place clear across the country is almost
+# certainly not what was meant - reject it rather than search there instead.
+GEOCODE_IGNORE_WITHIN_KM = 1.5  # a mention this close to the user already
+# describes where they already are, not somewhere else to search instead.
+GEOCODE_CACHE_TTL_S = 7 * 24 * 60 * 60  # place names don't move; Nominatim's
+# usage policy caps free use at 1 request/second, so this is worth caching
+# hard rather than re-geocoding the same phrase every round of a session.
+SAME_PLACE_KM = 0.3  # two mentions resolving within this of each other count
+# as the same place (e.g. "Mid Valley" vs "Mid Valley Megamall"), not a
+# conflict to ask about.
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+
+_geocode_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
+
+
+def extract_location_mentions(text: str) -> list[str]:
+    """Best-effort place-name phrases from free text ("near Mid Valley" ->
+    ["mid valley"]). Deliberately permissive and capped at two words - a
+    false positive, or a longer place name this cuts short ("Sunway Pyramid
+    Mall" -> "sunway pyramid"), just costs one wasted (cached) geocode
+    lookup that Nominatim's own fuzzy search usually still resolves or that
+    fails cleanly downstream; a false negative would silently lose a real
+    signal instead. Skips a phrase that's actually a cuisine, diet or budget
+    word the other guards already understand, or a feeling rather than a
+    place ("in the mood")."""
+    lower = text.lower()
+    out = []
+    for m in _LOCATION_PREPOSITION_RE.finditer(lower):
+        phrase = m.group(1).strip()
+        words = phrase.split()
+        if not phrase or any(w in _LOCATION_SKIP_WORDS for w in words):
+            continue
+        if any(needle in phrase for _, needles in CUISINE_NEEDLES for needle in needles):
+            continue
+        if any(pattern.search(phrase) for _, pattern in _DIET_PATTERNS):
+            continue
+        if _BUDGET_LOW_RE.search(phrase) or _BUDGET_HIGH_RE.search(phrase) or _BUDGET_RE.search(phrase):
+            continue
+        out.append(phrase)
+    return out
+
+
+def resolve_location_mention(phrase: str, lat: float, lng: float, country_iso: str | None) -> dict | None:
+    """Geocodes a mentioned place name via Nominatim, biased toward the
+    user's own area and country. Rejects a result farther than
+    GEOCODE_MAX_KM away (a same-named place elsewhere entirely) or a lookup
+    that fails outright - callers then just proceed without a search_center
+    rather than blocking the whole request on a flaky geocoder. Cached hard
+    - see GEOCODE_CACHE_TTL_S."""
+    cache_key = (phrase.lower(), country_iso or "")
+    cached = _geocode_cache.get(cache_key)
+    if cached and time.time() - cached[0] < GEOCODE_CACHE_TTL_S:
+        return cached[1]
+
+    params = {
+        "q": phrase, "format": "jsonv2", "limit": 3,
+        "viewbox": f"{lng - 0.6},{lat + 0.6},{lng + 0.6},{lat - 0.6}",
+    }
+    if country_iso:
+        params["countrycodes"] = country_iso.lower()
+    headers = {"User-Agent": "food-wheeler/1.0 (educational prototype)"}
+    result = None
+    try:
+        resp = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=5)
+        resp.raise_for_status()
+        for item in resp.json():
+            plat, plng = float(item["lat"]), float(item["lon"])
+            if haversine_km(lat, lng, plat, plng) <= GEOCODE_MAX_KM:
+                result = {"name": (item.get("display_name") or phrase).split(",")[0].strip(), "lat": plat, "lng": plng}
+                break
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        result = None
+
+    _geocode_cache[cache_key] = (time.time(), result)
+    return result
+
+
+def _first_resolved_mention(text: str, lat: float, lng: float, country_iso: str | None) -> dict | None:
+    for phrase in extract_location_mentions(text):
+        place = resolve_location_mention(phrase, lat, lng, country_iso)
+        if place:
+            return place
+    return None
+
+
+def _same_place(a: dict, b: dict) -> bool:
+    return haversine_km(a["lat"], a["lng"], b["lat"], b["lng"]) <= SAME_PLACE_KM
+
+
+def build_location_question(p1_place: dict, p2_place: dict) -> dict:
+    return {
+        "id": "location",
+        "prompt": "You mentioned two different spots - where should I search?",
+        "options": [
+            {"answer": "p1", "label": p1_place["name"], "text": f"Near {p1_place['name']}"},
+            {"answer": "p2", "label": p2_place["name"], "text": f"Near {p2_place['name']}"},
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # PlacesUnavailable -> HTTP response. Shared by /api/decide and /api/places
 # so a real-location fetch failure or an empty radius reads the same way on
 # both - neither ever falls back to silently returning the mock set, which
@@ -445,12 +564,13 @@ def _validate(body: dict):
     location = body.get("location")
     candidates_in = body.get("candidates")  # optional full echo from a previous response
     source_in = body.get("source")
+    search_center_in = body.get("search_center")  # optional echo, same idea as candidates_in
     engine_id = body.get("engine") or manager.default_id
     dev_mode = bool(body.get("dev_mode")) and DEV_MODE_ALLOWED
     radius_km = clamp_radius_km(body.get("radius_km", DEFAULT_RADIUS_KM))
     cross_border = bool(body.get("cross_border"))
     return (p1, p2, tiebreakers, round_num, location, candidates_in, source_in, engine_id, dev_mode,
-            radius_km, cross_border)
+            radius_km, cross_border, search_center_in)
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +790,7 @@ def decide():
     body = request.get_json(silent=True) or {}
     try:
         (p1, p2, tiebreakers, round_num, location, candidates_in,
-         source_in, engine_id, dev_mode, radius_km, cross_border) = _validate(body)
+         source_in, engine_id, dev_mode, radius_km, cross_border, search_center_in) = _validate(body)
     except ValidationError as e:
         return jsonify({"status": "error", "code": e.code, "message": e.message}), 400
     same_country = not cross_border
@@ -695,20 +815,65 @@ def decide():
     # already-trusted candidates_in round doesn't get re-biased; it's kept
     # exactly as fetched.
     combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])
+    country = _country_for_response(location, same_country)
+
+    # A trusted candidates_in round already searched around whatever
+    # search_center applied when it was fetched - carried over as-is rather
+    # than re-detected, exactly like candidates_in/source_in themselves.
+    search_center = search_center_in if candidates_in else None
+
+    if not candidates_in and location and location.get("lat") is not None and location.get("lng") is not None:
+        lat, lng = location["lat"], location["lng"]
+        p1_place = _first_resolved_mention(p1, lat, lng, country)
+        p2_place = _first_resolved_mention(p2, lat, lng, country)
+
+        if p1_place and p2_place and not _same_place(p1_place, p2_place):
+            location_answer = next((tb.get("answer") for tb in tiebreakers if tb.get("question_id") == "location"), None)
+            if location_answer == "p2":
+                search_center = {**p2_place, "mentioned_by": "p2"}
+            elif location_answer == "p1" or round_num >= MAX_TIEBREAKER_ROUNDS:
+                # Either explicitly chosen, or "Spin anyway" was hit without
+                # answering - default to partner 1's mention rather than
+                # asking the same question forever.
+                search_center = {**p1_place, "mentioned_by": "p1"}
+            else:
+                # Ask before ever fetching candidates - there's nothing
+                # useful to score yet, only two different places to pick
+                # between first.
+                engine_meta = {"id": engine.id, "label": engine.label, "score_type": "probability",
+                                "raw_top": None, "fallback_from": None, "latency_ms": 0.0}
+                return jsonify({
+                    "status": "tiebreaker",
+                    "reason": "location_conflict",
+                    "confidence": 0.0,
+                    "round": round_num,
+                    "rounds_left": MAX_TIEBREAKER_ROUNDS - round_num,
+                    "question": build_location_question(p1_place, p2_place),
+                    "contenders": [],
+                    "candidates": [],
+                    "source": "n/a",
+                    "engine": engine_meta,
+                    "country": country,
+                })
+        else:
+            chosen = p1_place or p2_place
+            if chosen and haversine_km(lat, lng, chosen["lat"], chosen["lng"]) >= GEOCODE_IGNORE_WITHIN_KM:
+                search_center = {**chosen, "mentioned_by": "p1" if p1_place else "p2"}
 
     if candidates_in:
         cands, source = candidates_in, source_in or "osm"
     else:
         try:
             prefer_cuisine = detect_cuisine_preference(combined_text)
-            cands, source = get_candidates(location, radius_km=radius_km, same_country=same_country,
-                                            prefer_cuisine=prefer_cuisine)
+            fetch_location = search_center or location
+            route_from = location if search_center else None
+            cands, source = get_candidates(fetch_location, radius_km=radius_km, same_country=same_country,
+                                            prefer_cuisine=prefer_cuisine, route_from=route_from)
         except PlacesUnavailable as exc:
             return _places_unavailable_response(exc, radius_km)
         except LocationRequired:
             return _location_required_response()
     cands = with_colors(cands)
-    country = _country_for_response(location, same_country)
 
     filtered, exclusions = apply_guards(combined_text, cands)
     asked_dims = {tb["question_id"] for tb in tiebreakers if tb.get("question_id")}
@@ -720,6 +885,7 @@ def decide():
         payload = _match_payload(winner, [{**winner, "probability": 1.0}], "only_option", 1.0,
                                   source, cands, round_num, t0, engine_meta)
         payload["country"] = country
+        payload["search_center"] = search_center
         if dev_mode:
             # Normally this path skips scoring entirely - the outcome is
             # forced regardless of what any engine says. Dev Mode is the one
@@ -767,6 +933,7 @@ def decide():
     except ValueError as exc:
         return jsonify({"status": "error", "code": "MODEL_ERROR", "message": str(exc)}), 500
     payload["country"] = country
+    payload["search_center"] = search_center
 
     if dev_mode:
         winner_id = payload.get("winner", {}).get("id")

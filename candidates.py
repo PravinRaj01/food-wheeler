@@ -739,6 +739,7 @@ def get_candidates(
     radius_km: float = DEFAULT_RADIUS_KM,
     same_country: bool = True,
     prefer_cuisine: str | None = None,
+    route_from: dict | None = None,
 ) -> tuple[list[dict], str]:
     """Returns (candidates, source) where source is 'overture', 'osm' or
     'mock'. The AI decision engines see only this curated, capped list -
@@ -754,6 +755,15 @@ def get_candidates(
     prefer_cuisine, when given (see detect_cuisine_preference()), reserves
     most of the pool for that cuisine instead of picking by distance and
     diversity alone with no idea what either partner actually asked for.
+
+    route_from, when given, is a SEPARATE {lat, lng} the final pool's
+    driving distance/time is measured FROM, while `location` still drives
+    the search itself and the straight-line radius cutoff. Used when a
+    partner mentioned a specific place to search around (see app.py's
+    extract_location_mentions/resolve_location_mention): the search centres
+    on the mentioned place, but "how far is this drive" is always measured
+    from the couple's own position, not from the place they merely
+    mentioned - see _finalize_candidates for the trade-off this implies.
 
     Raises LocationRequired with no location at all, and PlacesUnavailable
     if a real location was given but nothing usable came back - see each
@@ -771,7 +781,8 @@ def get_candidates(
         results = _fetch_overture(lat, lng, radius_km, country_iso)
         if not results:
             raise PlacesUnavailable("empty")
-        final = _finalize_candidates(lat, lng, results, radius_km, params, prefer_cuisine=prefer_cuisine)
+        final = _finalize_candidates(lat, lng, results, radius_km, params,
+                                      prefer_cuisine=prefer_cuisine, route_from=route_from)
         if not final:
             raise PlacesUnavailable("empty")
         return final, "overture"
@@ -810,7 +821,8 @@ def get_candidates(
     # 1-2 real results is still real - return them rather than jumping to
     # the mock set (which is what put NYC restaurants 15,000km away in
     # front of a real user).
-    final = _finalize_candidates(lat, lng, best_results, best_radius_km, params, prefer_cuisine=prefer_cuisine)
+    final = _finalize_candidates(lat, lng, best_results, best_radius_km, params,
+                                  prefer_cuisine=prefer_cuisine, route_from=route_from)
     if not final:
         raise PlacesUnavailable("empty")
     return final, "osm"
@@ -818,7 +830,7 @@ def get_candidates(
 
 def _finalize_candidates(
     lat: float, lng: float, results: list[dict], radius_km: float, params: dict,
-    prefer_cuisine: str | None = None,
+    prefer_cuisine: str | None = None, route_from: dict | None = None,
 ) -> list[dict]:
     """distance_km is only ever the cheap prefilter - a road route is never
     shorter than the straight line, so it's a safe upper bound, but it can
@@ -832,8 +844,26 @@ def _finalize_candidates(
 
     If routing fails outright, every place in the pool just keeps its
     straight-line distance_km (see _route_table) - the radius cutoff below
-    then falls back to that, exactly like before this existed."""
+    then falls back to that, exactly like before this existed.
+
+    route_from (see get_candidates) is a separate origin the pool is routed
+    FROM instead of (lat, lng) - used for a mentioned-place search, where
+    the radius is about the mentioned place but the drive is about the
+    couple's own position. In that case the road-distance radius refinement
+    above is skipped: a route measured from somewhere other than the search
+    centre isn't a valid basis to re-filter that same search's radius
+    against, so the pool is taken as-is (already limited to the straight-
+    line radius upstream) and only routed for display."""
     pool = _select_diverse(results, ROUTE_POOL_SIZE, stratify=params["stratify"], prefer_cuisine=prefer_cuisine)
+
+    if route_from:
+        routes = _route_table(route_from["lat"], route_from["lng"], pool)
+        for c in pool:
+            route = routes.get(c["id"])
+            if route is not None:
+                c["route_km"], c["route_min"] = route
+        return _select_diverse(pool, params["max_candidates"], stratify=params["stratify"], prefer_cuisine=prefer_cuisine)
+
     routes = _route_table(lat, lng, pool)
     for c in pool:
         route = routes.get(c["id"])
