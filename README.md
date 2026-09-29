@@ -13,10 +13,12 @@ and OpenStreetMap, so there are no paid API keys anywhere in the core experience
   (or taps chips like Malay, Spicy, Budget, Halal), and seals it. Sealed answers stay hidden, so
   whoever goes second can't just agree. Either partner can go first, and "Anything's fine" is a
   valid answer.
-- **Real places inside a real radius.** Restaurants come from OpenStreetMap's Overpass API around
-  your actual location, within the radius you pick (1 km to 50 km). There is no demo data: if
-  location is off, the app asks you to turn it on, and the server re-checks every candidate's
-  distance so nothing from outside the radius can come back.
+- **Real places inside a real radius — by road, not as the crow flies.** Restaurants come from
+  OpenStreetMap's Overpass API around your actual location, filtered to your own country by default
+  (a "cross-border" switch in Settings turns that off near a border), and the radius is enforced
+  against real OSRM driving distance, not a straight line. There is no demo data: if location is
+  off, the app asks you to turn it on. Directions open in whichever app you pick — Google Maps,
+  Waze, Apple Maps, or Android's own app chooser.
 - **Hard rules before any AI.** Budgets ("under RM30", "cheap", "treat ourselves"), exclusions
   ("no seafood") and diets (halal, vegetarian, vegan) are applied deterministically in `app.py`
   before a model ever scores anything, so a model can't talk its way past "no burgers".
@@ -44,6 +46,7 @@ Browser (Next.js PWA)
 
 Flask API (Google Cloud Run)
   ├─ Overpass (OpenStreetMap)     nearby restaurants; 3 mirrors raced in parallel, 6 h cache
+  ├─ OSRM (routing)               real driving distance/time; 2 mirrors raced, 30 min cache
   ├─ hard guards                  budget / exclusions / diet, applied before any model
   ├─ EngineManager                Laya · GLiNER2.5-Decide · CLM-8B (remote), lazy-loaded, RAM-budgeted
   └─ ranking + mediator           70% confidence rule, one joint question, fair spin after 2 rounds
@@ -73,7 +76,8 @@ the mediator behave identically whichever one is selected. Everything below `eng
 - **Models**: [Laya](https://huggingface.co/convaiinnovations/laya),
   [GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide), optional CLM-8B;
   weights are baked into the Docker image at build time
-- **Places & maps**: OpenStreetMap Overpass API, Leaflet with OSM tiles
+- **Places & maps**: OpenStreetMap Overpass API, OSRM (real driving distance/time), Leaflet with
+  OSM tiles
 - **Offline**: a hand-written service worker (`web/scripts/sw.template.js`) and an IndexedDB outbox
 - **Deployment**: Vercel (web app) + Google Cloud Run (API, redeployed by Cloud Build on push)
 
@@ -82,7 +86,7 @@ the mediator behave identically whichever one is selected. Everything below `eng
 ```
 food-wheeler/
 ├── app.py                  Flask routes, hard guards, ranking/tie/mediator logic, CORS, rate limiting
-├── candidates.py           Overpass fetch (parallel mirrors, cache), radius control, Explore listing
+├── candidates.py           Overpass fetch + OSRM routing (parallel mirrors, cache), radius control, Explore listing
 ├── engines/                DecisionEngine interface, Laya/GLiNER/CLM wrappers, EngineManager
 ├── tests/                  pytest suite — engines are faked, Overpass is mocked, no network needed
 ├── scripts/                engine probes, compare_engines.py, prefetch_models.py (Docker build)
@@ -163,8 +167,10 @@ Web app (`web/.env.local`, see `web/.env.example`):
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest tests/        # 89 tests: guards, ranking/mediator, radius & location rules, CORS, rate limit, engine manager
-cd web && npm test                       # 63 tests: decide reducer, API client, wheel landing property test, sync outbox
+.venv/bin/python -m pytest tests/        # 123 tests: guards, ranking/mediator, radius & location rules, same-country
+                                          # filtering, OSRM routing, CORS, rate limit, engine manager
+cd web && npm test                       # 73 tests: decide reducer, API client, wheel landing property test, sync
+                                          # outbox, distance formatting, navigation-app links
 cd web && npm run lint && npm run build
 .venv/bin/python scripts/compare_engines.py   # real engines, real latency/confidence on sample couples
 ```
@@ -188,6 +194,9 @@ walkthrough, cost controls, and a production smoke-test checklist.
   `/api/places` calls; the OpenStreetMap tile server sees which map area you're viewing, as any map
   does. The last fix is cached in `localStorage` for 15 minutes so reopening the app doesn't
   re-prompt.
+- **Your position and the shortlisted places are also sent to a public OSRM routing server**
+  (`routing.openstreetmap.de` or `router.project-osrm.org`) to work out real driving distance and
+  time — the same egress class as Overpass above, and likewise no API key involved.
 - **Voice input uses the browser's own Web Speech API.** In Chrome that means audio goes to
   Google's speech service; only the resulting text ever reaches Food Wheeler.
 - **Every history query is scoped to the signed-in user**, server-side. Guests' decisions stay in
