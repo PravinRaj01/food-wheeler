@@ -1,20 +1,46 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Logo } from "@/components/logo";
 
 const MIN_MS = 900;
 const MAX_MS = 2500;
+
+// display-mode can genuinely change while the page is open (right after
+// install), so this is a real subscription - same pattern as the identical
+// check in install-prompt.tsx (not shared as a module: both are a few
+// lines of browser-API glue, not worth a shared file for).
+function subscribeStandalone(callback: () => void) {
+  const mql = window.matchMedia("(display-mode: standalone)");
+  mql.addEventListener("change", callback);
+  return () => mql.removeEventListener("change", callback);
+}
+function getStandaloneSnapshot() {
+  return (
+    window.matchMedia("(display-mode: standalone)").matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true
+  );
+}
+function getStandaloneServerSnapshot() {
+  return false;
+}
 
 /**
  * Shown once on app launch (mounted from the root layout), not on every
  * navigation. Stays up until MIN_MS has passed AND the API has warmed up
  * (or MAX_MS elapses, whichever first) - this doubles as cover for a Cloud
  * Run cold start. Reduced-motion just uses MIN_MS with no fade.
+ *
+ * An installed PWA already shows Android/iOS's own splash (the manifest
+ * icon on background_color) before this component ever mounts, so this
+ * second one only runs for a browser-tab launch - otherwise a couple would
+ * see two splash screens back to back. The warm-up fetch below still fires
+ * either way; only the overlay itself is skipped.
  */
 export function SplashScreen() {
   const [visible, setVisible] = useState(true);
   const [fading, setFading] = useState(false);
+  const isStandalone = useSyncExternalStore(subscribeStandalone, getStandaloneSnapshot, getStandaloneServerSnapshot);
 
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -30,7 +56,7 @@ export function SplashScreen() {
     });
   }, []);
 
-  if (!visible) return null;
+  if (!visible || isStandalone) return null;
 
   return (
     // Always pale, regardless of the app's own light/dark preference - a

@@ -83,6 +83,23 @@ def no_real_routing(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def no_real_overture_data(monkeypatch):
+    # get_candidates()/list_places() check overture_covers() before ever
+    # touching Overpass now - without this, the FIRST test in the whole
+    # suite to call either would load the real bundled parquet file (fine,
+    # just an unnecessary disk read every test file that doesn't care about
+    # Overture would otherwise pay once). An empty index is exactly what a
+    # dev checkout without the bundle file sees in production too (see
+    # _load_overture_index's own docstring), so every existing fixture/
+    # expectation in this file (all using the (1, 1) test coordinate, nowhere
+    # near the real bundle's Malaysia/Singapore coverage anyway) is
+    # unaffected either way. Tests that exercise the real Overture path set
+    # candidates._overture_index to a fake populated dict instead.
+    monkeypatch.setattr(candidates, "_overture_index", {})
+    yield
+
+
 # --- clamp_radius_km / _radius_params ---------------------------------------
 
 def test_clamp_radius_km_accepts_values_in_range():
@@ -112,7 +129,7 @@ def test_radius_params_scale_up_with_distance():
     assert small["timeout_s"] <= mid["timeout_s"] <= large["timeout_s"] <= huge["timeout_s"]
     assert small["result_cap"] <= mid["result_cap"] <= large["result_cap"] <= huge["result_cap"]
     assert huge["timeout_s"] <= 25  # capped, not unbounded
-    assert huge["result_cap"] <= 600  # capped, not unbounded
+    assert huge["result_cap"] <= 1500  # capped, not unbounded
 
 
 def test_radius_params_keeps_wheel_readable_regardless_of_distance():
@@ -293,6 +310,135 @@ def test_describe_candidate_says_drive_when_a_route_is_known():
 def test_describe_candidate_falls_back_to_distance_km_away_without_a_route():
     c = {"name": "X", "cuisine": "Thai", "tags": [], "price": "$$", "distance_km": 3.0}
     assert "3.0 km away" in candidates.describe_candidate(c)
+
+
+# --- Overture Maps bundle -----------------------------------------------------
+
+def _fake_overture_place(id_, name, lat, lng, country="MY", category="restaurant", address=""):
+    return {"id": id_, "name": name, "lat": lat, "lng": lng, "country": country, "category": category, "address": address}
+
+
+def _install_fake_overture_index(monkeypatch, places):
+    index = {}
+    for p in places:
+        index.setdefault(candidates._overture_grid_cell(p["lat"], p["lng"]), []).append(p)
+    monkeypatch.setattr(candidates, "_overture_index", index)
+
+
+def test_overture_covers_returns_the_nearest_places_country(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [_fake_overture_place("a", "A", 1.42, 103.66, country="MY")])
+    assert candidates.overture_covers(1.4215, 103.659) == "MY"
+
+
+def test_overture_covers_returns_none_when_nothing_is_within_search_radius(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [_fake_overture_place("a", "A", 10.0, 50.0, country="MY")])
+    assert candidates.overture_covers(1.4215, 103.659) is None
+
+
+def test_overture_covers_returns_none_when_the_index_is_empty(monkeypatch):
+    monkeypatch.setattr(candidates, "_overture_index", {})
+    assert candidates.overture_covers(1.4215, 103.659) is None
+
+
+def test_fetch_overture_filters_by_country_and_radius(monkeypatch):
+    places = [
+        _fake_overture_place("near_my", "Near MY", 1.42, 103.66, country="MY"),
+        _fake_overture_place("near_sg", "Near SG", 1.42, 103.66, country="SG"),
+        _fake_overture_place("far", "Far", 5.0, 110.0, country="MY"),
+    ]
+    _install_fake_overture_index(monkeypatch, places)
+    results = candidates._fetch_overture(1.4215, 103.659, radius_km=5, country_iso="MY")
+    assert [c["id"] for c in results] == ["near_my"]
+
+
+def test_fetch_overture_without_a_country_filter_includes_every_country(monkeypatch):
+    places = [
+        _fake_overture_place("near_my", "Near MY", 1.42, 103.66, country="MY"),
+        _fake_overture_place("near_sg", "Near SG", 1.42, 103.66, country="SG"),
+    ]
+    _install_fake_overture_index(monkeypatch, places)
+    results = candidates._fetch_overture(1.4215, 103.659, radius_km=5, country_iso=None)
+    assert {c["id"] for c in results} == {"near_my", "near_sg"}
+
+
+def test_fetch_overture_returns_the_candidate_dict_shape(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [
+        _fake_overture_place("a", "7 Spice Indian Cuisine", 1.42, 103.66,
+                              country="MY", category="indian_restaurant", address="Jalan X"),
+    ])
+    results = candidates._fetch_overture(1.4215, 103.659, radius_km=5, country_iso=None)
+    assert len(results) == 1
+    c = results[0]
+    assert c["id"] == "a"
+    assert c["cuisine"] == "Indian"
+    assert c["dims"]["diet"] == "none"
+    assert c["dims"]["spice"] == "hot"
+    assert c["address"] == "Jalan X"
+    assert isinstance(c["distance_km"], float)
+
+
+def test_overture_dims_map_diet_categories():
+    assert candidates._dims_from_overture_category("halal_restaurant")["diet"] == "halal"
+    assert candidates._dims_from_overture_category("vegan_restaurant")["diet"] == "vegan"
+    assert candidates._dims_from_overture_category("vegetarian_restaurant")["diet"] == "vegetarian"
+    assert candidates._dims_from_overture_category("restaurant")["diet"] == "none"
+
+
+def test_overture_dims_map_service_and_price():
+    assert candidates._dims_from_overture_category("fast_food_restaurant")["service"] == "fast_food"
+    assert candidates._dims_from_overture_category("restaurant")["service"] == "sit_down"
+    assert candidates._price_from_overture_category("fast_food_restaurant") == "~$"
+    assert candidates._price_from_overture_category("indian_restaurant") == "~$$"
+
+
+def test_overture_cuisine_label_matches_the_frontends_needle_table():
+    # web/lib/decide/cuisines.ts's "Malay" filter needle is "malay" - the raw
+    # Overture category is "malaysian_restaurant", so the humanized label
+    # must still contain that substring for Explore's cuisine filter to work.
+    place = {**_fake_overture_place("a", "Some Malaysian Place", 1.0, 1.0, category="malaysian_restaurant"),
+             "distance_km": 1.0}
+    c = candidates._overture_to_candidate(place)
+    assert "malay" in c["cuisine"].lower()
+
+
+# --- name-based cuisine inference and free-text cuisine preference ----------
+
+def test_infer_cuisine_from_name_detects_indian_keywords():
+    assert candidates._infer_cuisine_from_name("Nasi Kandar Line Clear", "Restaurant") == "Indian"
+    assert candidates._infer_cuisine_from_name("Restoran Briyani King", "Restaurant") == "Indian"
+
+
+def test_infer_cuisine_from_name_leaves_an_already_specific_cuisine_alone():
+    assert candidates._infer_cuisine_from_name("Nasi Kandar Somewhere", "Chinese") == "Chinese"
+
+
+def test_infer_cuisine_from_name_leaves_unmatched_names_alone():
+    assert candidates._infer_cuisine_from_name("Joe's Diner", "Restaurant") == "Restaurant"
+
+
+def test_detect_cuisine_preference_finds_a_mentioned_cuisine():
+    assert candidates.detect_cuisine_preference("something indian please") == "Indian"
+    assert candidates.detect_cuisine_preference("sushi tonight") == "Japanese"
+
+
+def test_detect_cuisine_preference_returns_none_when_nothing_matches():
+    assert candidates.detect_cuisine_preference("anything is fine") is None
+
+
+def test_select_diverse_reserves_slots_for_the_preferred_cuisine():
+    results = (
+        [_fake_place(f"indian{i}", 10 + i, cuisine="Indian") for i in range(2)]
+        + [_fake_place(f"other{i}", i, cuisine=f"C{i}") for i in range(6)]
+    )
+    picked = candidates._select_diverse(results, max_candidates=6, prefer_cuisine="Indian")
+    assert sum(1 for c in picked if c["cuisine"] == "Indian") == 2
+    assert len(picked) == 6
+
+
+def test_select_diverse_falls_back_to_normal_pick_without_any_preferred_matches():
+    results = [_fake_place(f"p{i}", i, cuisine=f"C{i}") for i in range(6)]
+    picked = candidates._select_diverse(results, max_candidates=6, prefer_cuisine="Indian")
+    assert len(picked) == 6
 
 
 # --- get_candidates ----------------------------------------------------------
@@ -490,6 +636,72 @@ def test_get_candidates_keeps_straight_line_distance_when_routing_fails():
     assert "route_km" not in cands[0]
 
 
+def test_get_candidates_uses_overture_when_the_location_is_covered(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [
+        _fake_overture_place(f"p{i}", f"Place {i}", 1.4215 + i * 0.001, 103.659, country="MY")
+        for i in range(3)
+    ])
+    with patch.object(candidates, "_fetch_overpass") as mock_overpass:
+        cands, source = candidates.get_candidates({"lat": 1.4215, "lng": 103.659}, radius_km=5)
+
+    assert source == "overture"
+    mock_overpass.assert_not_called()
+    assert len(cands) == 3
+
+
+def test_get_candidates_falls_back_to_overpass_outside_the_bundle():
+    # no_real_overture_data leaves the index empty - (1, 1) isn't covered by
+    # the real bundle either, but this makes the fallback explicit either way.
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        return [_fake_place("a", 1.0)]
+
+    with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch):
+        cands, source = candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+    assert source == "osm"
+
+
+def test_get_candidates_overture_same_country_excludes_other_countries(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [
+        _fake_overture_place("my1", "MY Place", 1.4215, 103.659, country="MY"),
+        _fake_overture_place("sg1", "SG Place", 1.4215, 103.659, country="SG"),
+    ])
+    cands, source = candidates.get_candidates({"lat": 1.4215, "lng": 103.659}, radius_km=5, same_country=True)
+    assert source == "overture"
+    assert [c["id"] for c in cands] == ["my1"]
+
+
+def test_get_candidates_overture_cross_border_includes_every_country(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [
+        _fake_overture_place("my1", "MY Place", 1.4215, 103.659, country="MY"),
+        _fake_overture_place("sg1", "SG Place", 1.4215, 103.659, country="SG"),
+    ])
+    cands, source = candidates.get_candidates({"lat": 1.4215, "lng": 103.659}, radius_km=5, same_country=False)
+    assert {c["id"] for c in cands} == {"my1", "sg1"}
+
+
+def test_get_candidates_overture_raises_empty_when_nothing_is_in_the_requested_radius(monkeypatch):
+    # ~8.7km away - overture_covers' 100km search still finds it (so this
+    # location IS treated as covered by the bundle), but it's well outside
+    # the requested radius, so the actual fetch must come back empty.
+    _install_fake_overture_index(monkeypatch, [_fake_overture_place("far", "Far", 1.5, 103.659, country="MY")])
+    with pytest.raises(candidates.PlacesUnavailable) as exc_info:
+        candidates.get_candidates({"lat": 1.4215, "lng": 103.659}, radius_km=1)
+    assert exc_info.value.kind == "empty"
+
+
+def test_get_candidates_overture_applies_prefer_cuisine(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [
+        _fake_overture_place("indian1", "Indian One", 1.4215, 103.659, country="MY", category="indian_restaurant"),
+        _fake_overture_place("indian2", "Indian Two", 1.4216, 103.659, country="MY", category="indian_restaurant"),
+        _fake_overture_place("chinese", "Chinese", 1.4217, 103.659, country="MY", category="chinese_restaurant"),
+        _fake_overture_place("thai", "Thai", 1.4218, 103.659, country="MY", category="thai_restaurant"),
+    ])
+    cands, source = candidates.get_candidates(
+        {"lat": 1.4215, "lng": 103.659}, radius_km=5, prefer_cuisine="Indian"
+    )
+    assert sum(1 for c in cands if c["cuisine"] == "Indian") == 2
+
+
 def test_list_places_requires_a_real_location():
     with pytest.raises(candidates.LocationRequired):
         candidates.list_places(None, radius_km=5)
@@ -636,6 +848,30 @@ def test_list_places_same_country_false_never_calls_detect_country():
          patch.object(candidates, "_fetch_for_radius", return_value=results):
         candidates.list_places({"lat": 1, "lng": 1}, radius_km=5, same_country=False)
     mock_detect.assert_not_called()
+
+
+def test_list_places_uses_overture_when_the_location_is_covered(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [
+        _fake_overture_place("a", "Place A", 1.4215, 103.659, country="MY", category="indian_restaurant"),
+    ])
+    with patch.object(candidates, "_fetch_overpass") as mock_overpass:
+        places, source = candidates.list_places({"lat": 1.4215, "lng": 103.659}, radius_km=5)
+
+    assert source == "overture"
+    mock_overpass.assert_not_called()
+    assert places[0]["cuisine"] == "Indian"
+
+
+def test_list_places_overture_respects_cuisine_and_diet_filters(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [
+        _fake_overture_place("indian", "Indian Place", 1.4215, 103.659, country="MY", category="indian_restaurant"),
+        _fake_overture_place("halal", "Halal Place", 1.4216, 103.659, country="MY", category="halal_restaurant"),
+    ])
+    by_cuisine, _ = candidates.list_places({"lat": 1.4215, "lng": 103.659}, radius_km=5, cuisine="indian")
+    assert [p["id"] for p in by_cuisine] == ["indian"]
+
+    by_diet, _ = candidates.list_places({"lat": 1.4215, "lng": 103.659}, radius_km=5, diet="halal")
+    assert [p["id"] for p in by_diet] == ["halal"]
 
 
 # --- Flask routes ------------------------------------------------------------

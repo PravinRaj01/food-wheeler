@@ -94,6 +94,35 @@ def test_input_too_long_rejected(client, fake_manager):
     assert resp.get_json()["code"] == "INPUT_TOO_LONG"
 
 
+def test_decide_biases_the_pool_toward_a_mentioned_cuisine(client, fake_manager):
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        _post(client, partner1={"text": "something indian"}, partner2={"text": "anything's fine"})
+    assert mock_get.call_args.kwargs.get("prefer_cuisine") == "Indian"
+
+
+def test_decide_passes_no_cuisine_preference_when_nothing_is_mentioned(client, fake_manager):
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        _post(client, partner1={"text": "anything's fine"}, partner2={"text": "sure"})
+    assert mock_get.call_args.kwargs.get("prefer_cuisine") is None
+
+
+def test_decide_does_not_re_detect_cuisine_preference_for_trusted_candidates_in(client, fake_manager):
+    # candidates_in is only trusted with a real location (see
+    # _candidates_in_still_valid) - get_candidates() must not be called at
+    # all in that case, preference or not.
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    with patch("app.get_candidates") as mock_get:
+        resp = _post(
+            client,
+            partner1={"text": "something indian"}, partner2={"text": "y"},
+            location={"lat": 1.0, "lng": 1.0},
+            candidates=FIXED_CANDS, source="osm",
+        )
+    assert resp.status_code == 200
+    mock_get.assert_not_called()
+
+
 def test_high_confidence_match(client, fake_manager):
     _, engine_a, _ = fake_manager
     engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}

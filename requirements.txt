@@ -5,3 +5,4 @@ psutil==7.2.2
 laya==0.3.20
 gliner2==2.0.0
 peft==0.21.0
+duckdb==1.5.6

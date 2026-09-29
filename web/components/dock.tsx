@@ -54,7 +54,7 @@ export function Dock({
   return (
     <nav
       aria-label="Primary"
-      className="fixed inset-x-0 z-40 mx-auto flex w-fit items-center gap-1.5 rounded-[1.75rem] border border-line bg-canvas/70 p-2 shadow-[0_20px_50px_-15px_rgba(0,0,0,0.5)] backdrop-blur-xl"
+      className="fixed inset-x-0 z-40 mx-auto flex w-fit items-center gap-3 rounded-[1.75rem] border border-white/40 bg-[var(--dock-bg)] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_20px_50px_-15px_rgba(0,0,0,0.5)] backdrop-blur-2xl backdrop-saturate-150"
       style={{ bottom: "calc(env(safe-area-inset-bottom) + 1rem)" }}
       onMouseLeave={() => setHoveredIndex(null)}
     >
@@ -74,7 +74,7 @@ export function Dock({
           />
         );
       })}
-      <div aria-hidden className="mx-1 h-7 w-px shrink-0 self-center bg-line md:h-8" />
+      <div aria-hidden className="mx-2 h-7 w-px shrink-0 self-center bg-line md:h-8" />
       {secondaryItems.map((item) => {
         const index = nextIndex++;
         return (
@@ -148,7 +148,7 @@ function DockKey({
       animate={{ y: lift, scale }}
       transition={{ type: "spring", stiffness: 400, damping: 25 }}
       className={cn(
-        "flex h-11 w-11 items-center justify-center rounded-2xl bg-[color-mix(in_oklab,var(--canvas-fg)_6%,var(--canvas))] shadow-[inset_0_1px_0_color-mix(in_oklab,var(--canvas-fg)_12%,transparent),0_1px_2px_rgba(0,0,0,0.15)] md:h-12 md:w-12",
+        "flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--dock-key)] shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_1px_2px_rgba(0,0,0,0.15)] md:h-13 md:w-13",
         active && "ring-2 ring-ember/70",
       )}
     >
@@ -161,11 +161,15 @@ function DockKey({
     onMouseEnter: () => onHover(index),
     onFocus: () => onHover(index),
     onBlur: () => onHover(null),
-    className: "group relative flex flex-col items-center rounded-2xl outline-none focus-visible:ring-2 focus-visible:ring-ember/50",
+    className: "relative flex flex-col items-center rounded-2xl outline-none focus-visible:ring-2 focus-visible:ring-ember/50",
   };
 
   return (
-    <div className="relative flex flex-col items-center">
+    // "group" lives HERE, on the ancestor of both the key and the tooltip -
+    // it previously sat on the Link/button, a SIBLING of the tooltip span
+    // below rather than an ancestor, so group-hover/group-focus-visible on
+    // the tooltip never matched and it never appeared.
+    <div className="group relative flex flex-col items-center">
       {href ? (
         <Link href={href} {...wrapperProps}>
           {key}
@@ -186,7 +190,7 @@ function DockKey({
       )}
       <span
         role="tooltip"
-        className="pointer-events-none absolute -top-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-canvas px-2 py-1 text-[11px] text-canvas-fg opacity-0 shadow-md transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+        className="pointer-events-none absolute -top-12 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-canvas px-2 py-1 text-[11px] text-canvas-fg opacity-0 shadow-md transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
       >
         {label}
       </span>

@@ -14,12 +14,15 @@ const markSvg = readFileSync(path.join(root, "assets", "logo-mark.svg"), "utf8")
 const markInner = markSvg.replace(/^<svg[^>]*>/, "").replace(/<\/svg>\s*$/, "");
 const MARK_VB = "0 0 256 255";
 
+// Pale canvas, matching the app's own light-theme background (--canvas
+// with a --canvas-glow highlight in app/globals.css) - not the terracotta
+// --surface tone this used to use, which read as a dark, cheap-looking
+// squircle next to the app's actual light chrome.
 const GRADIENT = `
   <defs>
     <radialGradient id="bg" cx="32%" cy="24%" r="85%">
-      <stop offset="0%" stop-color="#C2410C"/>
-      <stop offset="60%" stop-color="#9A3412"/>
-      <stop offset="100%" stop-color="#431407"/>
+      <stop offset="0%" stop-color="#FCE7D1"/>
+      <stop offset="100%" stop-color="#FCF4E2"/>
     </radialGradient>
   </defs>`;
 
@@ -47,18 +50,19 @@ async function main() {
   // Manifest icons (public/, referenced from app/manifest.ts) - "any" purpose,
   // full app-icon look with rounded corners (Android applies its own mask on
   // top for adaptive icons, but this is what shows for "any").
-  await render(composed({ size: 192, markScale: 0.62, cornerPct: 0.22 }), path.join(publicDir, "icon-192.png"), 192);
-  await render(composed({ size: 512, markScale: 0.62, cornerPct: 0.22 }), path.join(publicDir, "icon-512.png"), 512);
+  await render(composed({ size: 192, markScale: 0.80, cornerPct: 0.22 }), path.join(publicDir, "icon-192.png"), 192);
+  await render(composed({ size: 512, markScale: 0.80, cornerPct: 0.22 }), path.join(publicDir, "icon-512.png"), 512);
 
   // Maskable: full-bleed background (no corner rounding - the OS applies its
-  // own mask shape), glyph shrunk further so it survives a circular crop.
-  await render(composed({ size: 512, markScale: 0.46, cornerPct: 0 }), path.join(publicDir, "maskable-512.png"), 512);
+  // own mask shape), glyph shrunk further so it survives a circular crop
+  // (still comfortably inside the ~80%-diameter safe circle at this scale).
+  await render(composed({ size: 512, markScale: 0.62, cornerPct: 0 }), path.join(publicDir, "maskable-512.png"), 512);
 
   // Next.js file-based metadata icons: app/icon.png -> favicon links,
   // app/apple-icon.png -> apple-touch-icon. Rendered fresh at each target
   // size (not downscaled from 512) so small sizes stay crisp.
-  await render(composed({ size: 32, markScale: 0.66, cornerPct: 0.22 }), path.join(appDir, "icon.png"), 32);
-  await render(composed({ size: 180, markScale: 0.62, cornerPct: 0.22 }), path.join(appDir, "apple-icon.png"), 180);
+  await render(composed({ size: 32, markScale: 0.84, cornerPct: 0.22 }), path.join(appDir, "icon.png"), 32);
+  await render(composed({ size: 180, markScale: 0.80, cornerPct: 0.22 }), path.join(appDir, "apple-icon.png"), 180);
 
   // A couple of PWA install-sheet screenshots' worth of headroom isn't
   // needed yet (Phase 1 screenshots come later); icons only for now.

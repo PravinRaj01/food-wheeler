@@ -35,7 +35,7 @@ export interface DecideState {
    * cards collapsed regardless of what was open when the tab closed. */
   openCard: 1 | 2 | null;
   candidates: Candidate[] | null;
-  source: "osm" | "mock" | null;
+  source: "overture" | "osm" | "mock" | null;
   tiebreakers: Tiebreaker[];
   round: number;
   radiusKm: number;
@@ -68,7 +68,7 @@ export type Action =
   | { type: "SEAL_NO_PREFERENCE"; card: 1 | 2 }
   | { type: "SET_ENGINE"; engine: EngineId }
   | { type: "SET_RADIUS_KM"; km: number }
-  | { type: "SEED_CANDIDATES"; candidates: Candidate[]; source: "osm" | "mock" }
+  | { type: "SEED_CANDIDATES"; candidates: Candidate[]; source: "overture" | "osm" | "mock" }
   | { type: "SET_DEV_MODE"; value: boolean }
   | { type: "SUBMIT_START" }
   | { type: "SUBMIT_MATCH"; response: MatchResponse }

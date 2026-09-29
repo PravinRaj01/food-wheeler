@@ -160,7 +160,7 @@ export default function DecidePage() {
     const raw = session.get(SEED_KEY, "");
     if (raw) {
       try {
-        const seeded = JSON.parse(raw) as { candidates: Candidate[]; source: "osm" | "mock" };
+        const seeded = JSON.parse(raw) as { candidates: Candidate[]; source: "overture" | "osm" | "mock" };
         if (seeded.candidates?.length) {
           dispatch({ type: "SEED_CANDIDATES", candidates: seeded.candidates, source: seeded.source });
           toast(`Added ${seeded.candidates[0].name} to tonight's wheel`);

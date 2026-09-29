@@ -33,7 +33,8 @@ from flask import Flask, jsonify, request
 
 from candidates import (
     DEFAULT_RADIUS_KM, PRICE_TIER_MAX, LocationRequired, PlacesUnavailable,
-    clamp_radius_km, detect_country, effective_km, get_candidates, haversine_km, list_places, with_colors,
+    clamp_radius_km, detect_country, detect_cuisine_preference, effective_km, get_candidates, haversine_km,
+    list_places, with_colors,
 )
 from engines import (
     EngineManager,
@@ -688,11 +689,20 @@ def decide():
     if candidates_in and not _candidates_in_still_valid(candidates_in, source_in, location, radius_km):
         candidates_in = None  # stale/mock/out-of-radius - fall through to a fresh fetch below
 
+    # Computed before the fetch below (not after, as it used to be) so a
+    # fresh get_candidates() call can bias its pool toward whatever cuisine
+    # either partner actually asked for - see prefer_cuisine there. An
+    # already-trusted candidates_in round doesn't get re-biased; it's kept
+    # exactly as fetched.
+    combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])
+
     if candidates_in:
         cands, source = candidates_in, source_in or "osm"
     else:
         try:
-            cands, source = get_candidates(location, radius_km=radius_km, same_country=same_country)
+            prefer_cuisine = detect_cuisine_preference(combined_text)
+            cands, source = get_candidates(location, radius_km=radius_km, same_country=same_country,
+                                            prefer_cuisine=prefer_cuisine)
         except PlacesUnavailable as exc:
             return _places_unavailable_response(exc, radius_km)
         except LocationRequired:
@@ -700,7 +710,6 @@ def decide():
     cands = with_colors(cands)
     country = _country_for_response(location, same_country)
 
-    combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])
     filtered, exclusions = apply_guards(combined_text, cands)
     asked_dims = {tb["question_id"] for tb in tiebreakers if tb.get("question_id")}
 

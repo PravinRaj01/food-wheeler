@@ -98,7 +98,7 @@ export interface DecideRequest {
   partner2: { text: string; input_mode: "typed" | "voice" };
   location: Location | null;
   candidates: Candidate[] | null;
-  source: "osm" | "mock" | null;
+  source: "overture" | "osm" | "mock" | null;
   tiebreakers: Tiebreaker[];
   round: number;
   radius_km: number;
@@ -109,7 +109,7 @@ export interface MatchResponse {
   status: "match";
   reason: "confident" | "fair_spin" | "only_option";
   confidence: number;
-  source: "osm" | "mock";
+  source: "overture" | "osm" | "mock";
   winner: Candidate;
   ranking: RankingRow[];
   candidates: Candidate[];
@@ -134,7 +134,7 @@ export interface TiebreakerResponse {
   question: MediatorQuestion;
   contenders: RankingRow[];
   candidates: Candidate[];
-  source: "osm" | "mock";
+  source: "overture" | "osm" | "mock";
   engine: EngineMeta;
   comparison?: Record<string, ComparisonEntry>;
   country?: string | null;
@@ -171,7 +171,7 @@ export type Place = Candidate;
 
 export interface PlacesResponse {
   places: Place[];
-  source: "osm" | "mock";
+  source: "overture" | "osm" | "mock";
   radius_km: number;
   country?: string | null;
 }

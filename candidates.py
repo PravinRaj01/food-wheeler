@@ -1,15 +1,19 @@
 """
 Restaurant candidate sourcing for The Food-Wheeler.
 
-Tries the free OSM Overpass API for real nearby venues. There is no demo
-mode in production any more: get_candidates()/list_places() require a real
-location and raise LocationRequired without one. A fetch failure or a
-genuinely empty radius is surfaced as PlacesUnavailable, never silently
-substituted with demo places at the wrong end of the world (see
-PlacesUnavailable below). MOCK_RESTAURANTS survives only as fixture data for
-tests and scripts/compare_engines.py.
+Inside Malaysia/Singapore, reads a bundled offline Overture Maps snapshot
+(see scripts/build_places.py and overture_covers() below) - no network call,
+no rate limits, exact per-place country codes. Everywhere else, tries the
+free OSM Overpass API for real nearby venues. There is no demo mode in
+production any more: get_candidates()/list_places() require a real location
+and raise LocationRequired without one. A fetch failure or a genuinely empty
+radius is surfaced as PlacesUnavailable, never silently substituted with
+demo places at the wrong end of the world (see PlacesUnavailable below).
+MOCK_RESTAURANTS survives only as fixture data for tests and
+scripts/compare_engines.py.
 """
 import math
+import pathlib
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -87,6 +91,62 @@ PLACES_LIST_LIMIT = 60
 
 # Rough price-tier ceilings in dollars, used only for the budget guard.
 PRICE_TIER_MAX = {"$": 15, "$$": 30, "$$$": 60}
+
+# Mirrors web/lib/decide/cuisines.ts's needle table, so a cuisine mentioned
+# in a partner's free text ("something indian") and Explore's cuisine
+# filter agree on what counts as each label. Used by both
+# detect_cuisine_preference() below and _infer_cuisine_from_name().
+CUISINE_NEEDLES: list[tuple[str, tuple[str, ...]]] = [
+    ("Malay", ("malay",)),
+    ("Chinese", ("chinese",)),
+    ("Indian", ("indian",)),
+    ("Japanese", ("japanese", "sushi", "ramen")),
+    ("Korean", ("korean",)),
+    ("Thai", ("thai",)),
+    ("Western", ("western", "american", "burger", "steak", "italian", "pizza", "european")),
+]
+
+# Telltale NAME keywords for a cuisine that a source's own tagging often
+# misses entirely - see the plan's spike: 66% of OSM places near a real
+# test location had no cuisine tag at all, and several (all the "Nasi
+# Kandar ..." and "Banana Leaf ..." places) are unmistakably Indian by name
+# alone. Only ever overrides an already-generic label - see
+# _infer_cuisine_from_name.
+_NAME_CUISINE_HINTS: list[tuple[str, tuple[str, ...]]] = [
+    ("Indian", ("mamak", "nasi kandar", "banana leaf", "briyani", "biryani", "capati", "chapati",
+                "thosai", "dosa", "curry house", "tandoori", "naan")),
+    ("Malay", ("nasi lemak", "ayam penyet", "warung")),
+    ("Chinese", ("dim sum", "bak kut teh", "kopitiam")),
+    ("Japanese", ("sushi", "ramen")),
+]
+_GENERIC_CUISINE_LABELS = {"restaurant", ""}
+
+
+def detect_cuisine_preference(text: str) -> str | None:
+    """Best-effort cuisine a partner's free text asked for (e.g. "something
+    indian" -> "Indian"), so the Decide pool can be biased toward it instead
+    of being picked by distance and diversity alone with no idea what either
+    partner actually wants - see get_candidates()'s prefer_cuisine. Returns
+    the first label mentioned; two different cuisines named just gets
+    whichever comes first, the same as every other guard in this file."""
+    lower = text.lower()
+    for label, needles in CUISINE_NEEDLES:
+        if any(n in lower for n in needles):
+            return label
+    return None
+
+
+def _infer_cuisine_from_name(name: str, cuisine: str) -> str:
+    """Only overrides a GENERIC label (no real cuisine tag/category from the
+    source data) - a source that already said "Chinese" or "Cafe" is
+    trusted as-is."""
+    if cuisine.lower() not in _GENERIC_CUISINE_LABELS:
+        return cuisine
+    lower = name.lower()
+    for label, needles in _NAME_CUISINE_HINTS:
+        if any(n in lower for n in needles):
+            return label
+    return cuisine
 
 # Muted jewel tones for the wheel slices - deliberately desaturated to
 # match the premium dark theme rather than a bright rainbow palette.
@@ -256,7 +316,17 @@ def _radius_params(radius_km: float) -> dict:
     out with the old 15s ceiling and silently falling through to mock data,
     which is exactly the "places outside the radius" bug this fixes."""
     timeout_s = round(max(8, min(25, 8 + radius_km * 0.35)))
-    result_cap = round(max(200, min(600, 150 + radius_km * 9)))
+    # Overpass's `out ... {result_cap}` truncates in its own internal (id)
+    # order, BEFORE we ever get a chance to sort by distance - a small cap
+    # in a dense area silently drops genuinely-nearby places in favour of
+    # arbitrary far-away ones that merely have a lower id. Measured against
+    # real data (see the plan's spike): the old formula's 285 cap at 15km
+    # radius (1,066 places within it) kept only 31 of the true nearest 60.
+    # A steeper slope and higher ceiling closes most of that gap without
+    # making a 50km query's payload/timeout risk unbounded - this is a
+    # mitigation for the OSM fallback path specifically; the bundled
+    # Overture source (see _fetch_overture) has no such cap at all.
+    result_cap = round(max(200, min(1500, 150 + radius_km * 60)))
     max_candidates = 6 if radius_km <= 3 else 8
     stratify = radius_km >= STRATIFY_THRESHOLD_KM
     widen_km = radius_km * 2 if radius_km <= WIDEN_THRESHOLD_KM else None
@@ -413,6 +483,159 @@ def _route_table(lat: float, lng: float, places: list[dict]) -> dict[str, tuple[
     return out
 
 
+# ---------------------------------------------------------------------------
+# Overture Maps Places - a bundled offline snapshot for Malaysia and
+# Singapore (see scripts/build_places.py), tried BEFORE ever reaching out to
+# Overpass. It has no rate limits, no network round trip, exact per-place
+# country codes (no is_in()/area guesswork), and far denser, better-
+# categorized coverage than OSM alone in this region (see the plan's N2
+# spike: Overture had "Agneey's Cuisine" correctly tagged indian_restaurant
+# when it wasn't in OSM at all). Overpass remains the only source for
+# everywhere else in the world.
+# ---------------------------------------------------------------------------
+OVERTURE_DATA_PATH = pathlib.Path(__file__).resolve().parent / "data" / "places_my_sg.parquet"
+# ~11km at the equator - the same grid precision as COUNTRY_CACHE_TTL_S's
+# cache key above, chosen for the same reason (plenty for "which country",
+# and plenty of cells per query without an excessive lookup fan-out).
+OVERTURE_GRID_DEG = 0.1
+KM_PER_DEG = 111.0
+
+# None = "not loaded yet" (loads lazily, once, on first use); {} = "loaded,
+# and the bundle file wasn't found" - both cases fall through to Overpass,
+# but the distinction matters for _load_overture_index()'s own caching.
+_overture_index: dict[tuple[int, int], list[dict]] | None = None
+
+_OVERTURE_DIET_CATEGORIES = {
+    "halal_restaurant": "halal",
+    "vegan_restaurant": "vegan",
+    "vegetarian_restaurant": "vegetarian",
+    "gluten_free_restaurant": "gluten_free",
+}
+_OVERTURE_FAST_CATEGORIES = {"fast_food_restaurant", "food_court", "food_truck_stand"}
+_OVERTURE_CHEAP_CATEGORIES = _OVERTURE_FAST_CATEGORIES | {"cafe", "coffee_shop", "bakery", "dessert_shop", "ice_cream_shop"}
+_OVERTURE_SPICY_HINTS = ("indian", "thai", "mexican", "szechuan", "sichuan", "korean")
+
+
+def _overture_grid_cell(lat: float, lng: float) -> tuple[int, int]:
+    return (round(lat / OVERTURE_GRID_DEG), round(lng / OVERTURE_GRID_DEG))
+
+
+def _load_overture_index() -> dict[tuple[int, int], list[dict]]:
+    """Loads the bundled dataset into an in-memory grid index once per
+    process. An empty dict (file missing, e.g. a dev checkout that hasn't
+    run scripts/build_places.py) is cached the same as a populated one -
+    every caller already treats "no bucket here" and "no index at all" the
+    same way, by falling through to Overpass."""
+    global _overture_index
+    if _overture_index is not None:
+        return _overture_index
+    if not OVERTURE_DATA_PATH.exists():
+        _overture_index = {}
+        return _overture_index
+
+    import duckdb  # local import: only paid for when the bundle is actually used
+
+    con = duckdb.connect()
+    rows = con.execute(
+        "SELECT id, name, lat, lng, country, category, address "
+        f"FROM read_parquet('{OVERTURE_DATA_PATH.as_posix()}')"
+    ).fetchall()
+    index: dict[tuple[int, int], list[dict]] = {}
+    for id_, name, lat, lng, country, category, address in rows:
+        index.setdefault(_overture_grid_cell(lat, lng), []).append({
+            "id": id_, "name": name, "lat": lat, "lng": lng,
+            "country": country, "category": category, "address": address,
+        })
+    _overture_index = index
+    return index
+
+
+def _overture_raw_within(lat: float, lng: float, radius_km: float) -> list[dict]:
+    """Every bundled place within radius_km of (lat, lng), each carrying a
+    freshly computed distance_km - not yet a candidate dict (see
+    _overture_to_candidate) and not yet filtered by country."""
+    index = _load_overture_index()
+    if not index:
+        return []
+    span = math.ceil(radius_km / (OVERTURE_GRID_DEG * KM_PER_DEG)) + 1
+    clat, clng = _overture_grid_cell(lat, lng)
+    out = []
+    for dlat in range(-span, span + 1):
+        for dlng in range(-span, span + 1):
+            for p in index.get((clat + dlat, clng + dlng), ()):
+                d = haversine_km(lat, lng, p["lat"], p["lng"])
+                if d <= radius_km:
+                    out.append({**p, "distance_km": round(d, 2)})
+    return out
+
+
+def overture_covers(lat: float, lng: float, search_km: float = 100.0) -> str | None:
+    """The country of the nearest bundled place within search_km, or None if
+    the bundle has nothing that close. get_candidates()/list_places() use
+    this both as "is this location even in the Overture bundle at all" and
+    (when it is) as the free, local replacement for detect_country()'s live
+    Overpass call."""
+    nearby = _overture_raw_within(lat, lng, search_km)
+    if not nearby:
+        return None
+    return min(nearby, key=lambda p: p["distance_km"])["country"]
+
+
+def _dims_from_overture_category(category: str) -> dict:
+    is_fast = category in _OVERTURE_FAST_CATEGORIES
+    spicy_hint = any(k in category for k in _OVERTURE_SPICY_HINTS)
+    return {
+        "service": "fast_food" if is_fast else "sit_down",
+        "spice": "hot" if spicy_hint else "mild",
+        "setting": "indoor",  # outdoor-seating isn't in the trimmed bundle columns
+        "price": "low" if is_fast else "mid",
+        "diet": _OVERTURE_DIET_CATEGORIES.get(category, "none"),
+    }
+
+
+def _tags_from_overture_category(category: str) -> list[str]:
+    label = category.replace("_restaurant", "").replace("_", " ").strip()
+    tags = [label] if label and label != "restaurant" else []
+    if category in _OVERTURE_FAST_CATEGORIES:
+        tags.append("fast_food")
+    diet = _OVERTURE_DIET_CATEGORIES.get(category)
+    if diet:
+        tags.append(diet)
+    return tags or ["restaurant"]
+
+
+def _price_from_overture_category(category: str) -> str:
+    return "~$" if category in _OVERTURE_CHEAP_CATEGORIES else "~$$"
+
+
+def _overture_to_candidate(p: dict) -> dict:
+    category = p["category"]
+    cuisine = category.replace("_restaurant", "").replace("_", " ").title() or "Restaurant"
+    return {
+        "id": p["id"],
+        "name": p["name"],
+        "cuisine": _infer_cuisine_from_name(p["name"], cuisine),
+        "tags": _tags_from_overture_category(category),
+        "price": _price_from_overture_category(category),
+        "lat": p["lat"], "lng": p["lng"],
+        "address": p["address"] or "Nearby",
+        "dims": _dims_from_overture_category(category),
+        "distance_km": p["distance_km"],
+    }
+
+
+def _fetch_overture(lat: float, lng: float, radius_km: float, country_iso: str | None) -> list[dict]:
+    """Same shape and radius semantics as _fetch_overpass()'s eventual
+    output, but synchronous and network-free - no widen-retry or timeout
+    handling needed, since a local grid lookup has neither Overpass's
+    flakiness nor its result_cap-before-sorting truncation problem (every
+    in-radius place is always included, not just the first N returned)."""
+    raw = _overture_raw_within(lat, lng, radius_km)
+    if country_iso:
+        raw = [p for p in raw if p["country"] == country_iso]
+    return [_overture_to_candidate(p) for p in raw]
+
+
 def _fetch_overpass(
     lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int, country_iso: str | None = None
 ) -> list[dict] | None:
@@ -479,7 +702,7 @@ def _fetch_overpass(
         if elat is None or elng is None:
             continue
         amenity = tags.get("amenity", "restaurant")
-        cuisine = (tags.get("cuisine") or amenity).replace("_", " ").title()
+        cuisine = _infer_cuisine_from_name(name, (tags.get("cuisine") or amenity).replace("_", " ").title())
         results.append({
             "id": f"osm_{el['type']}_{el['id']}",
             "name": name,
@@ -512,15 +735,25 @@ def _within_radius(results: list[dict], radius_km: float) -> list[dict]:
 
 
 def get_candidates(
-    location: dict | None, radius_km: float = DEFAULT_RADIUS_KM, same_country: bool = True
+    location: dict | None,
+    radius_km: float = DEFAULT_RADIUS_KM,
+    same_country: bool = True,
+    prefer_cuisine: str | None = None,
 ) -> tuple[list[dict], str]:
-    """Returns (candidates, source) where source is 'osm' or 'mock'. The AI
-    decision engines see only this curated, capped list - see list_places()
-    for the uncurated Explore browsing list.
+    """Returns (candidates, source) where source is 'overture', 'osm' or
+    'mock'. The AI decision engines see only this curated, capped list -
+    see list_places() for the uncurated Explore browsing list.
 
     same_country=True (the default) keeps results inside whichever country
-    the given location is in - see detect_country(). If detection fails,
-    this silently searches unfiltered rather than returning nothing.
+    the given location is in. Inside the bundled Overture region (see
+    overture_covers()) that's exact, from each place's own country field;
+    outside it, it's detect_country()'s best-effort Overpass lookup, which
+    silently searches unfiltered rather than returning nothing if detection
+    fails.
+
+    prefer_cuisine, when given (see detect_cuisine_preference()), reserves
+    most of the pool for that cuisine instead of picking by distance and
+    diversity alone with no idea what either partner actually asked for.
 
     Raises LocationRequired with no location at all, and PlacesUnavailable
     if a real location was given but nothing usable came back - see each
@@ -530,8 +763,21 @@ def get_candidates(
         raise LocationRequired()
 
     lat, lng = location["lat"], location["lng"]
-    country_iso = detect_country(lat, lng) if same_country else None
     params = _radius_params(radius_km)
+
+    overture_country = overture_covers(lat, lng)
+    if overture_country is not None:
+        country_iso = overture_country if same_country else None
+        results = _fetch_overture(lat, lng, radius_km, country_iso)
+        if not results:
+            raise PlacesUnavailable("empty")
+        final = _finalize_candidates(lat, lng, results, radius_km, params, prefer_cuisine=prefer_cuisine)
+        if not final:
+            raise PlacesUnavailable("empty")
+        return final, "overture"
+
+    # Outside the bundle - the existing live-Overpass path, unchanged.
+    country_iso = detect_country(lat, lng) if same_country else None
     radii_km = [radius_km] + ([params["widen_km"]] if params["widen_km"] else [])
 
     any_fetch_succeeded = False
@@ -564,18 +810,19 @@ def get_candidates(
     # 1-2 real results is still real - return them rather than jumping to
     # the mock set (which is what put NYC restaurants 15,000km away in
     # front of a real user).
-    final = _finalize_candidates(lat, lng, best_results, best_radius_km, params)
+    final = _finalize_candidates(lat, lng, best_results, best_radius_km, params, prefer_cuisine=prefer_cuisine)
     if not final:
         raise PlacesUnavailable("empty")
     return final, "osm"
 
 
 def _finalize_candidates(
-    lat: float, lng: float, results: list[dict], radius_km: float, params: dict
+    lat: float, lng: float, results: list[dict], radius_km: float, params: dict,
+    prefer_cuisine: str | None = None,
 ) -> list[dict]:
-    """distance_km is only ever the cheap Overpass prefilter - a road route
-    is never shorter than the straight line, so it's a safe upper bound, but
-    it can meaningfully OVERSTATE how close a place actually is (a river, a
+    """distance_km is only ever the cheap prefilter - a road route is never
+    shorter than the straight line, so it's a safe upper bound, but it can
+    meaningfully OVERSTATE how close a place actually is (a river, a
     highway with no nearby crossing, a gated community). This takes a
     diverse pool of the straight-line survivors, looks up real driving
     distance/time for the whole pool in one OSRM call, drops anything
@@ -586,14 +833,14 @@ def _finalize_candidates(
     If routing fails outright, every place in the pool just keeps its
     straight-line distance_km (see _route_table) - the radius cutoff below
     then falls back to that, exactly like before this existed."""
-    pool = _select_diverse(results, ROUTE_POOL_SIZE, stratify=params["stratify"])
+    pool = _select_diverse(results, ROUTE_POOL_SIZE, stratify=params["stratify"], prefer_cuisine=prefer_cuisine)
     routes = _route_table(lat, lng, pool)
     for c in pool:
         route = routes.get(c["id"])
         if route is not None:
             c["route_km"], c["route_min"] = route
     in_radius = [c for c in pool if effective_km(c) <= radius_km + RADIUS_FILTER_EPSILON_KM]
-    return _select_diverse(in_radius, params["max_candidates"], stratify=params["stratify"])
+    return _select_diverse(in_radius, params["max_candidates"], stratify=params["stratify"], prefer_cuisine=prefer_cuisine)
 
 
 def _pick_diverse(bucket: list[dict], count: int) -> list[dict]:
@@ -614,11 +861,31 @@ def _pick_diverse(bucket: list[dict], count: int) -> list[dict]:
     return picked
 
 
-def _select_diverse(results: list[dict], max_candidates: int, stratify: bool = False) -> list[dict]:
+def _select_diverse(
+    results: list[dict], max_candidates: int, stratify: bool = False, prefer_cuisine: str | None = None,
+) -> list[dict]:
     """Nearest first, preferring a cuisine we haven't picked yet. For the
     Road Trip tier (`stratify=True`), pick across near/mid/far distance
     rings instead so far-away places genuinely show up rather than the
-    nearest 8 dominating a 15km radius."""
+    nearest 8 dominating a 15km radius.
+
+    prefer_cuisine reserves most of max_candidates for places matching it
+    (nearest first), filling any remainder with the normal diverse pick from
+    what's left - so "we want Indian" doesn't get diluted down to one Indian
+    place lost among 8 diversity picks just because it wasn't the closest."""
+    if prefer_cuisine:
+        needle = prefer_cuisine.lower()
+        preferred = [r for r in results if needle in r["cuisine"].lower()]
+        if preferred:
+            reserved = max(1, round(max_candidates * 0.75))
+            preferred = sorted(preferred, key=effective_km)[:reserved]
+            remaining_needed = max_candidates - len(preferred)
+            if remaining_needed <= 0:
+                return preferred
+            rest = [r for r in results if r not in preferred]
+            filler = _select_diverse(rest, remaining_needed, stratify=stratify)
+            return preferred + filler
+
     results = sorted(results, key=effective_km)
 
     if stratify and len(results) >= max_candidates:
@@ -669,17 +936,26 @@ def list_places(
         raise LocationRequired()
 
     lat, lng = location["lat"], location["lng"]
-    country_iso = detect_country(lat, lng) if same_country else None
-    params = _radius_params(radius_km)
-    fetched = _fetch_for_radius(
-        lat, lng, round(radius_km * 1000), params["timeout_s"], params["result_cap"], country_iso=country_iso
-    )
-    if fetched is None:
-        raise PlacesUnavailable("fetch")
-    fetched = _within_radius(fetched, radius_km)
-    if not fetched:
-        raise PlacesUnavailable("empty")
-    results, source = fetched, "osm"
+
+    overture_country = overture_covers(lat, lng)
+    if overture_country is not None:
+        country_iso = overture_country if same_country else None
+        fetched = _fetch_overture(lat, lng, radius_km, country_iso)
+        if not fetched:
+            raise PlacesUnavailable("empty")
+        results, source = fetched, "overture"
+    else:
+        country_iso = detect_country(lat, lng) if same_country else None
+        params = _radius_params(radius_km)
+        fetched = _fetch_for_radius(
+            lat, lng, round(radius_km * 1000), params["timeout_s"], params["result_cap"], country_iso=country_iso
+        )
+        if fetched is None:
+            raise PlacesUnavailable("fetch")
+        fetched = _within_radius(fetched, radius_km)
+        if not fetched:
+            raise PlacesUnavailable("empty")
+        results, source = fetched, "osm"
 
     if cuisine:
         # Comma-separated needles, matching ANY of them - the frontend's
@@ -693,9 +969,10 @@ def list_places(
         results = [r for r in results if r.get("dims", {}).get("diet") == diet]
 
     # Sort and cap by the cheap straight-line distance BEFORE routing -
-    # routing all of `result_cap` (up to 600) places in one OSRM table call
-    # would be slow and likely exceed the public demo servers' own
-    # table-size limits, and only the nearest `limit` are ever shown anyway.
+    # routing every fetched place (the Overpass path alone can return up to
+    # 1500, see _radius_params) in one OSRM table call would be slow and
+    # likely exceed the public demo servers' own table-size limits, and
+    # only the nearest `limit` are ever shown anyway.
     results = sorted(results, key=lambda r: r.get("distance_km", 999))[:limit]
 
     if results:

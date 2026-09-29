@@ -19,7 +19,7 @@ export function PlaceCard({
 }: {
   place: Place;
   allPlaces: Place[];
-  source: "osm" | "mock";
+  source: "overture" | "osm" | "mock";
   selected: boolean;
   onSelect: () => void;
 }) {

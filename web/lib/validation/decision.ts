@@ -34,7 +34,7 @@ export const decisionSchema = z.object({
   confidence: z.number().min(0).max(1),
   reason: z.string().max(40),
   radiusKm: z.number().min(1).max(50),
-  source: z.enum(["osm", "mock"]),
+  source: z.enum(["overture", "osm", "mock"]),
   winner: candidateSchema,
   runnerUps: z.array(z.object({ id: z.string(), name: z.string(), probability: z.number() })).max(10),
   tiebreakers: z.array(z.object({ question_id: z.string(), answer: z.string(), text: z.string() })).max(10),

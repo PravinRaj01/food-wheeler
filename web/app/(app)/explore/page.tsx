@@ -32,6 +32,7 @@ export default function ExplorePage() {
   const [cuisineLabel, setCuisineLabel] = useState("All");
   const [diet, setDiet] = useState<string | null>(null);
   const [places, setPlaces] = useState<Place[]>([]);
+  const [source, setSource] = useState<"overture" | "osm" | "mock">("osm");
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -63,6 +64,7 @@ export default function ExplorePage() {
       .then((res) => {
         if (cancelled) return;
         setPlaces(res.places);
+        setSource(res.source);
         setSelectedId(res.places[0]?.id ?? null);
       })
       .catch(() => {
@@ -174,7 +176,7 @@ export default function ExplorePage() {
                 key={p.id}
                 place={p}
                 allPlaces={places}
-                source="osm"
+                source={source}
                 selected={p.id === selectedId}
                 onSelect={() => setSelectedId(p.id)}
               />

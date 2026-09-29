@@ -58,6 +58,15 @@
 
   --background: var(--canvas);
   --foreground: var(--canvas-fg);
+
+  /* The floating dock's frosted-glass tone - deliberately always the PALE
+     logo color (not an alias onto --canvas/--canvas-fg like the rest of
+     this file), so it reads as one consistent glass object floating above
+     the page in both themes rather than retheming with the canvas under
+     it. --dock-key is a touch more opaque than --dock-bg so each key still
+     reads as a raised chip against the glass. */
+  --dock-bg: color-mix(in oklab, #fcf4e2 55%, transparent);
+  --dock-key: color-mix(in oklab, #fcf4e2 75%, transparent);
 }
 
 :root[data-theme="dark"] {
@@ -67,6 +76,8 @@
   --surface: #fce7d1;
   --surface-fg: #431407;
   --map-tile-filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.5);
+  --dock-bg: color-mix(in oklab, #fcf4e2 12%, transparent);
+  --dock-key: color-mix(in oklab, #fcf4e2 20%, transparent);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -77,6 +88,8 @@
     --surface: #fce7d1;
     --surface-fg: #431407;
     --map-tile-filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.5);
+    --dock-bg: color-mix(in oklab, #fcf4e2 12%, transparent);
+    --dock-key: color-mix(in oklab, #fcf4e2 20%, transparent);
   }
 }
 
