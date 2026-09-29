@@ -82,12 +82,12 @@ export default function ExplorePage() {
 
   return (
     // Mobile: an ordinary scrolling page (the list renders at full length
-    // below the map/filters, with bottom padding for the fixed bottom nav)
-    // - the old h-[calc(100dvh-3.5rem)] + inner-scroll layout didn't account
+    // below the map/filters, with bottom padding for the floating dock) -
+    // the old h-[calc(100dvh-3.5rem)] + inner-scroll layout didn't account
     // for that nav, so the list was squeezed into a sliver behind it.
     // md+: back to the split map/list view, with the list scrolling in its
-    // own panel.
-    <div className="flex flex-col pb-24 md:h-[calc(100dvh-3.5rem)] md:flex-row md:pb-0">
+    // own panel (see its own bottom padding below, for the same reason).
+    <div className="flex flex-col pb-28 md:h-[calc(100dvh-3.5rem)] md:flex-row md:pb-0">
       {/* Map */}
       <div className="relative h-56 shrink-0 md:h-auto md:flex-1">
         <ExploreMap places={hasLocation ? places : []} userLocation={loc.location} selectedId={selectedId} onSelect={setSelectedId} />
@@ -148,7 +148,7 @@ export default function ExplorePage() {
           ))}
         </div>
 
-        <div className="min-h-0 space-y-2 md:flex-1 md:overflow-y-auto">
+        <div className="min-h-0 space-y-2 md:flex-1 md:overflow-y-auto md:pb-28">
           {!hasLocation && (
             <div className="flex flex-col items-center gap-3 py-10 text-center">
               <p className="text-sm text-cream/50">

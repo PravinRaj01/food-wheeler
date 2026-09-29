@@ -78,7 +78,8 @@ export function RevealMap({
   return (
     <div
       ref={containerRef}
-      className="h-56 w-full overflow-hidden rounded-xl md:h-64 [&_.leaflet-tile-pane]:[filter:var(--map-tile-filter)]"
+      // isolate - see the identical comment in explore-map.tsx.
+      className="isolate h-56 w-full overflow-hidden rounded-xl md:h-64 [&_.leaflet-tile-pane]:[filter:var(--map-tile-filter)]"
     />
   );
 }

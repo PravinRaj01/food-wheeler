@@ -67,7 +67,7 @@ export function SwRegister() {
   return (
     <div
       role="status"
-      className="fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+1rem)] z-100 mx-auto flex w-[min(90vw,26rem)] items-center justify-between gap-3 rounded-xl bg-surface px-4 py-3 text-sm text-surface-fg shadow-[0_20px_50px_-15px_rgba(0,0,0,0.5)] md:bottom-4"
+      className="fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+6rem)] z-100 mx-auto flex w-[min(90vw,26rem)] items-center justify-between gap-3 rounded-xl bg-surface px-4 py-3 text-sm text-surface-fg shadow-[0_20px_50px_-15px_rgba(0,0,0,0.5)]"
     >
       <span>New version ready</span>
       <button

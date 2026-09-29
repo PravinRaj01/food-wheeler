@@ -113,7 +113,13 @@ export function ExploreMap({
   return (
     <div
       ref={containerRef}
-      className="h-full w-full [&_.leaflet-tile-pane]:[filter:var(--map-tile-filter)]"
+      // isolate: Leaflet's own panes/controls use z-index up to 1000, and
+      // since Leaflet only sets the container to position:relative (no
+      // z-index), those values otherwise escape into the page's root
+      // stacking context and paint over anything there with a lower
+      // z-index - including the floating dock. isolate contains them
+      // without touching this container's own stacking position.
+      className="isolate h-full w-full [&_.leaflet-tile-pane]:[filter:var(--map-tile-filter)]"
     />
   );
 }
