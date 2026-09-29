@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getUserIdOrNull } from "@/lib/auth/session";
 import { getDb } from "@/lib/db/client";
 import { listDecisionsForUser } from "@/lib/db/queries";
+import { formatDistance } from "@/lib/decide/distance";
 
 function groupByDay(rows: Awaited<ReturnType<typeof listDecisionsForUser>>) {
   const groups = new Map<string, typeof rows>();
@@ -62,7 +63,7 @@ export default async function HistoryPage() {
                     <div>
                       <p className="text-sm font-medium text-cream">{row.winner.name}</p>
                       <p className="mt-0.5 text-xs text-cream/50">
-                        {row.winner.cuisine} · {row.winner.distance_km} km
+                        {row.winner.cuisine} · {formatDistance(row.winner)}
                       </p>
                     </div>
                     <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--ember)_18%,transparent)] px-2 py-1 text-[11px] text-ember">

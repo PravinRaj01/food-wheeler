@@ -4,6 +4,7 @@ import { ArrowLeft, Navigation } from "lucide-react";
 import { getUserIdOrNull } from "@/lib/auth/session";
 import { getDb } from "@/lib/db/client";
 import { getDecisionForUser } from "@/lib/db/queries";
+import { formatDistance } from "@/lib/decide/distance";
 import { HistoryMap } from "@/components/history/history-map";
 
 export default async function HistoryDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -34,7 +35,7 @@ export default async function HistoryDetailPage({ params }: { params: Promise<{ 
         </span>
       </div>
       <p className="mb-3 text-sm text-cream/60">
-        {w.cuisine} · {w.price} · {w.distance_km} km
+        {w.cuisine} · {w.price} · {formatDistance(w)}
       </p>
       <div className="mb-4 flex flex-wrap gap-1.5">
         {w.tags.map((t) => (

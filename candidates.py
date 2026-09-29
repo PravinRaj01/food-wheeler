@@ -20,6 +20,19 @@ OVERPASS_ENDPOINTS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 ]
+# Free, keyless OSRM table-service mirrors for real driving distance/time -
+# raced the same way as OVERPASS_ENDPOINTS above (first success wins).
+OSRM_ENDPOINTS = [
+    "https://routing.openstreetmap.de/routed-car/table/v1/driving",
+    "https://router.project-osrm.org/table/v1/driving",
+]
+ROUTE_CACHE_TTL_S = 30 * 60  # a restaurant's route doesn't meaningfully
+# change minute to minute; 30 min means the Decide prefetch (see
+# decide/page.tsx) and the real /api/decide call that follows it usually
+# share one cache entry instead of routing the same pool twice.
+ROUTE_HTTP_TIMEOUT_S = 4
+ROUTE_POOL_SIZE = 25  # how many straight-line survivors get a real route
+# looked up before the final diverse pick - see _finalize_candidates().
 CACHE_TTL_S = 6 * 60 * 60  # restaurants don't move; a long TTL means a
 # widened/prefetched radius during typing is very likely still warm by the
 # time "Find our table" actually calls get_candidates() with the same key.
@@ -81,6 +94,7 @@ SLICE_COLORS = ["#c9a15a", "#3f6b66", "#8c4a4a", "#556080", "#7a8450", "#b5674a"
 
 _cache: dict[tuple, tuple[float, list[dict]]] = {}
 _country_cache: dict[tuple[float, float], tuple[float, str | None]] = {}
+_route_cache: dict[tuple, tuple[float, tuple[float, float] | None]] = {}
 
 # Fixture venues for tests and scripts/compare_engines.py only - production
 # get_candidates()/list_places() never return these (see LocationRequired).
@@ -157,6 +171,16 @@ def haversine_km(lat1, lng1, lat2, lng2):
     dl = math.radians(lng2 - lng1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * r * math.asin(math.sqrt(a))
+
+
+def effective_km(c: dict) -> float:
+    """Real driving distance when we have one (see _route_table), falling
+    back to the straight-line distance_km Overpass gave us otherwise. Used
+    everywhere a "distance" drives a decision - sorting, the radius cutoff,
+    the deterministic tiebreak - so all of it reflects an actual drive
+    rather than a straight line through whatever's in between."""
+    route_km = c.get("route_km")
+    return route_km if route_km is not None else c.get("distance_km", 999)
 
 
 def _price_from_amenity(amenity: str) -> str:
@@ -312,6 +336,83 @@ def detect_country(lat: float, lng: float, timeout_s: int = 6) -> str | None:
     return country
 
 
+def _query_osrm_endpoint(base_url: str, coords: str, params: str) -> dict | None:
+    try:
+        resp = requests.get(f"{base_url}/{coords}", params=params, timeout=ROUTE_HTTP_TIMEOUT_S)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != "Ok":
+            return None
+        return data
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def _route_table(lat: float, lng: float, places: list[dict]) -> dict[str, tuple[float, float] | None]:
+    """Real driving distance/duration from (lat, lng) to each place, via one
+    OSRM `table` request for the whole pool at once (rather than one request
+    per place). Returns {place_id: (route_km, route_min)}, using None for a
+    place OSRM couldn't reach or when routing failed outright - callers fall
+    back to the already-known straight-line distance_km in that case, this
+    never raises.
+
+    Cached per (~100m grid cell, place id) for ROUTE_CACHE_TTL_S - see its
+    docstring for why."""
+    grid_lat, grid_lng = round(lat, 3), round(lng, 3)
+    now = time.time()
+    out: dict[str, tuple[float, float] | None] = {}
+    to_fetch: list[dict] = []
+    for p in places:
+        cached = _route_cache.get((grid_lat, grid_lng, p["id"]))
+        if cached and now - cached[0] < ROUTE_CACHE_TTL_S:
+            out[p["id"]] = cached[1]
+        else:
+            to_fetch.append(p)
+
+    if not to_fetch:
+        return out
+
+    # Coordinate 0 is the user; the rest are the places, in order - OSRM's
+    # `sources=0` then gives back one row of distances/durations FROM the
+    # user TO every coordinate (itself included at index 0, skipped below).
+    coords = ";".join([f"{lng},{lat}"] + [f"{p['lng']},{p['lat']}" for p in to_fetch])
+    params = "sources=0&annotations=distance,duration"
+
+    executor = ThreadPoolExecutor(max_workers=len(OSRM_ENDPOINTS))
+    futures = {
+        executor.submit(_query_osrm_endpoint, ep, coords, params): ep
+        for ep in OSRM_ENDPOINTS
+    }
+    data = None
+    try:
+        for fut in as_completed(futures):
+            result = fut.result()
+            if result is not None:
+                data = result
+                break
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    if data is None:
+        # Routing failed everywhere - nothing is cached here (a transient
+        # outage shouldn't be remembered for 30 minutes), and every place
+        # just falls back to its straight-line distance_km.
+        for p in to_fetch:
+            out[p["id"]] = None
+        return out
+
+    distances = (data.get("distances") or [[]])[0]
+    durations = (data.get("durations") or [[]])[0]
+    for i, p in enumerate(to_fetch):
+        dist_m = distances[i + 1] if i + 1 < len(distances) else None
+        dur_s = durations[i + 1] if i + 1 < len(durations) else None
+        route = (round(dist_m / 1000, 2), round(dur_s / 60)) if dist_m is not None and dur_s is not None else None
+        out[p["id"]] = route
+        _route_cache[(grid_lat, grid_lng, p["id"])] = (now, route)
+
+    return out
+
+
 def _fetch_overpass(
     lat: float, lng: float, radius_m: int, timeout_s: int, result_cap: int, country_iso: str | None = None
 ) -> list[dict] | None:
@@ -435,6 +536,7 @@ def get_candidates(
 
     any_fetch_succeeded = False
     best_results: list[dict] | None = None
+    best_radius_km = radius_km
     for i, r_km in enumerate(radii_km):
         results = _fetch_for_radius(
             lat, lng, round(r_km * 1000), params["timeout_s"], params["result_cap"], country_iso=country_iso
@@ -448,9 +550,12 @@ def get_candidates(
         # found the most rather than just the last one tried.
         if best_results is None or len(results) > len(best_results):
             best_results = results
+            best_radius_km = r_km
         if len(results) >= MIN_RESULTS_BEFORE_FALLBACK:
             if len(results) >= MIN_RESULTS_BEFORE_WIDEN or i == len(radii_km) - 1:
-                return _select_diverse(results, params["max_candidates"], stratify=params["stratify"]), "osm"
+                best_results = results
+                best_radius_km = r_km
+                break
 
     if not any_fetch_succeeded:
         raise PlacesUnavailable("fetch")
@@ -459,7 +564,36 @@ def get_candidates(
     # 1-2 real results is still real - return them rather than jumping to
     # the mock set (which is what put NYC restaurants 15,000km away in
     # front of a real user).
-    return best_results, "osm"
+    final = _finalize_candidates(lat, lng, best_results, best_radius_km, params)
+    if not final:
+        raise PlacesUnavailable("empty")
+    return final, "osm"
+
+
+def _finalize_candidates(
+    lat: float, lng: float, results: list[dict], radius_km: float, params: dict
+) -> list[dict]:
+    """distance_km is only ever the cheap Overpass prefilter - a road route
+    is never shorter than the straight line, so it's a safe upper bound, but
+    it can meaningfully OVERSTATE how close a place actually is (a river, a
+    highway with no nearby crossing, a gated community). This takes a
+    diverse pool of the straight-line survivors, looks up real driving
+    distance/time for the whole pool in one OSRM call, drops anything
+    that's actually outside the radius by road, and only THEN makes the
+    final diverse pick - so radius_km is a promise about the drive, not
+    just the distance as the crow flies.
+
+    If routing fails outright, every place in the pool just keeps its
+    straight-line distance_km (see _route_table) - the radius cutoff below
+    then falls back to that, exactly like before this existed."""
+    pool = _select_diverse(results, ROUTE_POOL_SIZE, stratify=params["stratify"])
+    routes = _route_table(lat, lng, pool)
+    for c in pool:
+        route = routes.get(c["id"])
+        if route is not None:
+            c["route_km"], c["route_min"] = route
+    in_radius = [c for c in pool if effective_km(c) <= radius_km + RADIUS_FILTER_EPSILON_KM]
+    return _select_diverse(in_radius, params["max_candidates"], stratify=params["stratify"])
 
 
 def _pick_diverse(bucket: list[dict], count: int) -> list[dict]:
@@ -485,7 +619,7 @@ def _select_diverse(results: list[dict], max_candidates: int, stratify: bool = F
     Road Trip tier (`stratify=True`), pick across near/mid/far distance
     rings instead so far-away places genuinely show up rather than the
     nearest 8 dominating a 15km radius."""
-    results = sorted(results, key=lambda r: r.get("distance_km", 999))
+    results = sorted(results, key=effective_km)
 
     if stratify and len(results) >= max_candidates:
         n = len(results)
@@ -558,7 +692,21 @@ def list_places(
     if diet:
         results = [r for r in results if r.get("dims", {}).get("diet") == diet]
 
+    # Sort and cap by the cheap straight-line distance BEFORE routing -
+    # routing all of `result_cap` (up to 600) places in one OSRM table call
+    # would be slow and likely exceed the public demo servers' own
+    # table-size limits, and only the nearest `limit` are ever shown anyway.
     results = sorted(results, key=lambda r: r.get("distance_km", 999))[:limit]
+
+    if results:
+        routes = _route_table(lat, lng, results)
+        for r in results:
+            route = routes.get(r["id"])
+            if route is not None:
+                r["route_km"], r["route_min"] = route
+        results = [r for r in results if effective_km(r) <= radius_km + RADIUS_FILTER_EPSILON_KM]
+        results = sorted(results, key=effective_km)
+
     return with_colors(results), source
 
 
@@ -582,4 +730,6 @@ def describe_candidate(c: dict) -> str:
     """One-line description used as the engine's criteria/label text for a
     candidate. Shared by every engine so wording stays consistent."""
     tags = ", ".join(c.get("tags", []))
-    return f"{c['name']} — {c['cuisine']}, {tags}, {c['price']}, {c.get('distance_km', '?')} km away"
+    route_km = c.get("route_km")
+    distance = f"{route_km} km drive" if route_km is not None else f"{c.get('distance_km', '?')} km away"
+    return f"{c['name']} — {c['cuisine']}, {tags}, {c['price']}, {distance}"

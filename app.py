@@ -33,7 +33,7 @@ from flask import Flask, jsonify, request
 
 from candidates import (
     DEFAULT_RADIUS_KM, PRICE_TIER_MAX, LocationRequired, PlacesUnavailable,
-    clamp_radius_km, detect_country, get_candidates, haversine_km, list_places, with_colors,
+    clamp_radius_km, detect_country, effective_km, get_candidates, haversine_km, list_places, with_colors,
 )
 from engines import (
     EngineManager,
@@ -410,7 +410,7 @@ def build_state(partner1_text: str, partner2_text: str, tiebreakers: list[dict])
 # ---------------------------------------------------------------------------
 def deterministic_tiebreak(tied: list[dict]) -> dict:
     def sort_key(c):
-        return (c.get("distance_km", 999), PRICE_TIER_MAX.get(c["price"].lstrip("~"), 999))
+        return (effective_km(c), PRICE_TIER_MAX.get(c["price"].lstrip("~"), 999))
 
     ranked = sorted(tied, key=sort_key)
     best = ranked[0]

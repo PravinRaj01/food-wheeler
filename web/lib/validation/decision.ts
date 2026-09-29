@@ -14,6 +14,8 @@ const candidateSchema = z.object({
   lng: z.number(),
   address: z.string(),
   distance_km: z.number(),
+  route_km: z.number().optional(),
+  route_min: z.number().optional(),
   dims: z.object({
     service: z.enum(["fast_food", "sit_down"]),
     spice: z.enum(["hot", "mild"]),

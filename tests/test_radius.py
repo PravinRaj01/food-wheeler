@@ -24,6 +24,8 @@ from fakes import FakeEngine  # noqa: E402
 # namespace at call time, so patch.object(candidates, "_query_overpass_endpoint", ...)
 # still takes effect through it exactly as it would through the live name.
 _real_detect_country = candidates.detect_country
+# Same trick for _route_table - see no_real_routing below.
+_real_route_table = candidates._route_table
 
 
 def _fake_place(id_, distance_km, cuisine="Mexican"):
@@ -38,9 +40,11 @@ def _fake_place(id_, distance_km, cuisine="Mexican"):
 def clear_cache():
     candidates._cache.clear()
     candidates._country_cache.clear()
+    candidates._route_cache.clear()
     yield
     candidates._cache.clear()
     candidates._country_cache.clear()
+    candidates._route_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +66,20 @@ def no_real_country_detection(monkeypatch):
     # _country_for_response) need app.detect_country patched too.
     monkeypatch.setattr(candidates, "detect_country", lambda lat, lng, timeout_s=6: None)
     monkeypatch.setattr(app_module, "detect_country", lambda lat, lng, timeout_s=6: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def no_real_routing(monkeypatch):
+    # get_candidates()/list_places() both call _route_table() on every
+    # result pool now - without this, every test below would fire a REAL
+    # OSRM request. Returning {} means "no route found for anyone", which
+    # is exactly the routing-failed fallback: effective_km() falls back to
+    # distance_km, matching every existing straight-line expectation in
+    # this file unchanged. Tests that exercise real routing behavior call
+    # _real_route_table directly instead (same two-names trick as
+    # detect_country above).
+    monkeypatch.setattr(candidates, "_route_table", lambda lat, lng, places: {})
     yield
 
 
@@ -202,6 +220,79 @@ def test_detect_country_is_cached_across_calls():
     # Every mirror is raced on the first call; none should fire again on the
     # second now that it's cached.
     assert len(calls) == len(candidates.OVERPASS_ENDPOINTS)
+
+
+# --- _route_table (OSRM) -----------------------------------------------------
+
+def test_route_table_returns_km_and_minutes_per_place():
+    places = [{"id": "a", "lat": 1.1, "lng": 1.1}, {"id": "b", "lat": 1.2, "lng": 1.2}]
+
+    def fake_query(base_url, coords, params):
+        # index 0 is the user (distance/duration to itself, unused); indices
+        # 1 and 2 are places "a" and "b" in the order passed in.
+        return {"code": "Ok", "distances": [[0, 4200, 9100]], "durations": [[0, 300, 620]]}
+
+    with patch.object(candidates, "_query_osrm_endpoint", side_effect=fake_query):
+        routes = _real_route_table(1.0, 1.0, places)
+
+    assert routes["a"] == (4.2, 5)
+    assert routes["b"] == (9.1, 10)
+
+
+def test_route_table_returns_none_per_place_when_every_mirror_fails():
+    places = [{"id": "a", "lat": 1.1, "lng": 1.1}]
+    with patch.object(candidates, "_query_osrm_endpoint", return_value=None):
+        routes = _real_route_table(1.0, 1.0, places)
+    assert routes == {"a": None}
+
+
+def test_route_table_is_cached_per_grid_cell_and_place():
+    places = [{"id": "a", "lat": 1.1, "lng": 1.1}]
+
+    with patch.object(
+        candidates, "_query_osrm_endpoint",
+        return_value={"code": "Ok", "distances": [[0, 1000]], "durations": [[0, 60]]},
+    ) as mock_query:
+        first = _real_route_table(1.0, 1.0, places)
+        calls_after_first = mock_query.call_count
+        second = _real_route_table(1.0, 1.0, places)
+
+    assert first == second == {"a": (1.0, 1)}
+    assert calls_after_first >= 1
+    # Nothing should reach the mirrors again on the second call - it's
+    # served entirely from the grid-cell+place-id cache.
+    assert mock_query.call_count == calls_after_first
+
+
+def test_route_table_puts_the_user_at_coordinate_zero():
+    seen_coords = []
+
+    def fake_query(base_url, coords, params):
+        seen_coords.append(coords)
+        return None
+
+    with patch.object(candidates, "_query_osrm_endpoint", side_effect=fake_query):
+        _real_route_table(1.0, 2.0, [{"id": "a", "lat": 3.0, "lng": 4.0}])
+
+    assert seen_coords[0].startswith("2.0,1.0;")  # lng,lat for the user, first
+
+
+def test_effective_km_prefers_route_km_when_present():
+    assert candidates.effective_km({"distance_km": 5.0, "route_km": 8.2}) == 8.2
+
+
+def test_effective_km_falls_back_to_distance_km_without_a_route():
+    assert candidates.effective_km({"distance_km": 5.0}) == 5.0
+
+
+def test_describe_candidate_says_drive_when_a_route_is_known():
+    c = {"name": "X", "cuisine": "Thai", "tags": [], "price": "$$", "distance_km": 3.0, "route_km": 4.1}
+    assert "4.1 km drive" in candidates.describe_candidate(c)
+
+
+def test_describe_candidate_falls_back_to_distance_km_away_without_a_route():
+    c = {"name": "X", "cuisine": "Thai", "tags": [], "price": "$$", "distance_km": 3.0}
+    assert "3.0 km away" in candidates.describe_candidate(c)
 
 
 # --- get_candidates ----------------------------------------------------------
@@ -355,6 +446,50 @@ def test_get_candidates_filters_out_of_radius_results():
     assert [c["id"] for c in cands] == ["near"]
 
 
+def test_get_candidates_sets_route_km_and_route_min_when_routing_succeeds():
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        return [_fake_place(f"p{i}", i, cuisine=f"C{i}") for i in range(3)]
+
+    def fake_route_table(lat, lng, places):
+        return {p["id"]: (p["distance_km"] + 1.0, 10) for p in places}
+
+    with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch), \
+         patch.object(candidates, "_route_table", side_effect=fake_route_table):
+        cands, source = candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+
+    assert cands  # sanity: routing/radius math above didn't drop everyone
+    assert all(c["route_km"] == c["distance_km"] + 1.0 and c["route_min"] == 10 for c in cands)
+
+
+def test_get_candidates_drops_a_place_whose_real_route_exceeds_the_radius():
+    # "near" looks in-radius by straight line, but its real drive (a river,
+    # a highway with no nearby crossing) is actually longer than the radius
+    # - it must be dropped even though distance_km alone would have kept it.
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        return [_fake_place("near", 2.0, cuisine="A"), _fake_place("also_near", 3.0, cuisine="B")]
+
+    def fake_route_table(lat, lng, places):
+        return {"near": (9.0, 20), "also_near": (4.0, 8)}
+
+    with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch), \
+         patch.object(candidates, "_route_table", side_effect=fake_route_table):
+        cands, source = candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+
+    assert [c["id"] for c in cands] == ["also_near"]
+
+
+def test_get_candidates_keeps_straight_line_distance_when_routing_fails():
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        return [_fake_place("a", 2.0)]
+
+    with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch), \
+         patch.object(candidates, "_route_table", return_value={}):
+        cands, source = candidates.get_candidates({"lat": 1, "lng": 1}, radius_km=5)
+
+    assert cands[0]["distance_km"] == 2.0
+    assert "route_km" not in cands[0]
+
+
 def test_list_places_requires_a_real_location():
     with pytest.raises(candidates.LocationRequired):
         candidates.list_places(None, radius_km=5)
@@ -385,6 +520,49 @@ def test_roadtrip_stratifies_across_distance_rings():
 
 
 # --- list_places --------------------------------------------------------------
+
+def test_list_places_sorts_by_route_km_not_straight_line_distance():
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        return [_fake_place("straight_near", 1.0, cuisine="A"), _fake_place("straight_far", 2.0, cuisine="B")]
+
+    def fake_route_table(lat, lng, places):
+        # Route distances invert the straight-line order.
+        return {"straight_near": (4.0, 9), "straight_far": (1.0, 3)}
+
+    with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch), \
+         patch.object(candidates, "_route_table", side_effect=fake_route_table):
+        places, source = candidates.list_places({"lat": 1, "lng": 1}, radius_km=5)
+
+    assert [p["id"] for p in places] == ["straight_far", "straight_near"]
+
+
+def test_list_places_drops_a_place_whose_real_route_exceeds_the_radius():
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        return [_fake_place("far_by_road", 1.0, cuisine="A"), _fake_place("near_by_road", 4.0, cuisine="B")]
+
+    def fake_route_table(lat, lng, places):
+        # Straight-line makes "far_by_road" look closest, but its real
+        # route is actually the longer, out-of-radius one.
+        return {"far_by_road": (8.0, 15), "near_by_road": (2.0, 5)}
+
+    with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch), \
+         patch.object(candidates, "_route_table", side_effect=fake_route_table):
+        places, source = candidates.list_places({"lat": 1, "lng": 1}, radius_km=5)
+
+    assert [p["id"] for p in places] == ["near_by_road"]
+
+
+def test_list_places_falls_back_to_distance_km_when_routing_fails():
+    def fake_fetch(lat, lng, radius_m, timeout_s, result_cap, country_iso=None):
+        return [_fake_place("a", 2.0), _fake_place("b", 3.0)]
+
+    with patch.object(candidates, "_fetch_overpass", side_effect=fake_fetch), \
+         patch.object(candidates, "_route_table", return_value={}):
+        places, source = candidates.list_places({"lat": 1, "lng": 1}, radius_km=5)
+
+    assert [p["id"] for p in places] == ["a", "b"]
+    assert all("route_km" not in p for p in places)
+
 
 def test_list_places_filters_by_cuisine_and_diet():
     results = [

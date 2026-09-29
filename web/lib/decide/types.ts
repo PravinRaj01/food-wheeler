@@ -28,6 +28,11 @@ export interface Candidate {
   lng: number;
   address: string;
   distance_km: number;
+  /** Real driving distance/time from candidates._route_table(), when OSRM
+   * routing succeeded - absent (not null) when it didn't, so callers fall
+   * back to the straight-line distance_km. See lib/decide/distance.ts. */
+  route_km?: number;
+  route_min?: number;
   dims: {
     service: "fast_food" | "sit_down";
     spice: "hot" | "mild";

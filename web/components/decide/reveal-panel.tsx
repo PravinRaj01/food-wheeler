@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { motion } from "motion/react";
 import { Navigation, RotateCcw } from "lucide-react";
 import type { Location, MatchResponse } from "@/lib/decide/types";
+import { formatDistance } from "@/lib/decide/distance";
 import { DevComparison } from "@/components/decide/dev-comparison";
 import { REVEAL_KICKER } from "@/lib/copy";
 
@@ -63,7 +64,7 @@ export function RevealPanel({
         </span>
       </div>
       <p className="mb-3 text-sm text-cream/60">
-        {w.cuisine} · {w.price} · {w.distance_km} km
+        {w.cuisine} · {w.price} · {formatDistance(w)}
       </p>
       <div className="mb-4 flex flex-wrap gap-1.5">
         {w.tags.map((t) => (

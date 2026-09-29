@@ -5,6 +5,7 @@ import { Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { session } from "@/lib/safe-storage";
 import type { Place } from "@/lib/decide/types";
+import { formatDistance } from "@/lib/decide/distance";
 
 const SEED_KEY = "fw_seeded_candidates";
 const SEED_POOL_SIZE = 6;
@@ -51,7 +52,7 @@ export function PlaceCard({
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-cream">{place.name}</p>
           <p className="mt-0.5 text-xs text-cream/50">
-            {place.cuisine} · {place.price} · {place.distance_km} km
+            {place.cuisine} · {place.price} · {formatDistance(place)}
           </p>
           <div className="mt-2 flex flex-wrap gap-1">
             {place.tags.slice(0, 3).map((t) => (

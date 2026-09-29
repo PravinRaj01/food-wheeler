@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { Location, Place } from "@/lib/decide/types";
+import { formatDistance } from "@/lib/decide/distance";
 
 function pinIcon(highlighted: boolean) {
   const color = highlighted ? "#fb923c" : "#c9a15a";
@@ -69,7 +70,7 @@ export function ExploreMap({
       } else {
         const marker = L.marker([p.lat, p.lng], { icon: pinIcon(p.id === selectedId) })
           .addTo(map)
-          .bindPopup(`<b>${p.name}</b><br>${p.cuisine} · ${p.distance_km} km`)
+          .bindPopup(`<b>${p.name}</b><br>${p.cuisine} · ${formatDistance(p)}`)
           .on("click", () => onSelectRef.current(p.id));
         markersRef.current.set(p.id, marker);
       }

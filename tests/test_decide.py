@@ -454,3 +454,21 @@ def test_dev_mode_ignored_when_disallowed(client, fake_manager, monkeypatch):
     resp = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, dev_mode=True)
     data = resp.get_json()
     assert "comparison" not in data
+
+
+# --- deterministic_tiebreak uses real driving distance when it has one -----
+
+def test_deterministic_tiebreak_prefers_route_km_over_straight_line_distance():
+    # "far_by_line" looks closer by distance_km alone, but its real route is
+    # longer - the tiebreak must pick on the drive, not the crow-flies line.
+    far_by_line = {"id": "a", "price": "$$", "distance_km": 1.0, "route_km": 9.0}
+    near_by_road = {"id": "b", "price": "$$", "distance_km": 5.0, "route_km": 2.0}
+    winner = app_module.deterministic_tiebreak([far_by_line, near_by_road])
+    assert winner["id"] == "b"
+
+
+def test_deterministic_tiebreak_falls_back_to_distance_km_without_a_route():
+    nearer = {"id": "a", "price": "$$", "distance_km": 1.0}
+    farther = {"id": "b", "price": "$$", "distance_km": 5.0}
+    winner = app_module.deterministic_tiebreak([farther, nearer])
+    assert winner["id"] == "a"
