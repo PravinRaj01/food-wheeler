@@ -868,7 +868,8 @@ def decide():
             fetch_location = search_center or location
             route_from = location if search_center else None
             cands, source = get_candidates(fetch_location, radius_km=radius_km, same_country=same_country,
-                                            prefer_cuisine=prefer_cuisine, route_from=route_from)
+                                            prefer_cuisine=prefer_cuisine, route_from=route_from,
+                                            mention_text=combined_text)
         except PlacesUnavailable as exc:
             return _places_unavailable_response(exc, radius_km)
         except LocationRequired:

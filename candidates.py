@@ -14,6 +14,7 @@ scripts/compare_engines.py.
 """
 import math
 import pathlib
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -121,19 +122,103 @@ _NAME_CUISINE_HINTS: list[tuple[str, tuple[str, ...]]] = [
 ]
 _GENERIC_CUISINE_LABELS = {"restaurant", ""}
 
+# One spelling for a dish people write four ways - "biryani" in a partner's
+# text and "Briyani King" on a signboard must compare equal.
+_DISH_SPELLING_RE = re.compile(r"\b(?:biriyani|briyani|briani|biryani)\b")
+
+
+def _canon(text: str) -> str:
+    return _DISH_SPELLING_RE.sub("biryani", text.lower())
+
+
+def _has_word(haystack: str, needle: str) -> bool:
+    """Whole-word match (allowing a plural s), so "dosa" doesn't fire on
+    "dosage" the way a bare substring test would."""
+    return re.search(rf"\b{re.escape(needle)}s?\b", haystack) is not None
+
 
 def detect_cuisine_preference(text: str) -> str | None:
     """Best-effort cuisine a partner's free text asked for (e.g. "something
-    indian" -> "Indian"), so the Decide pool can be biased toward it instead
-    of being picked by distance and diversity alone with no idea what either
-    partner actually wants - see get_candidates()'s prefer_cuisine. Returns
-    the first label mentioned; two different cuisines named just gets
-    whichever comes first, the same as every other guard in this file."""
-    lower = text.lower()
+    indian" -> "Indian", "chicken biryani" -> "Indian"), so the Decide pool
+    can be biased toward it instead of being picked by distance and
+    diversity alone with no idea what either partner actually wants - see
+    get_candidates()'s prefer_cuisine. Cuisine words win first; dish words
+    (the same table _infer_cuisine_from_name uses on place names) are the
+    fallback. Returns the first label mentioned; two different cuisines
+    named just gets whichever comes first, the same as every other guard in
+    this file."""
+    lower = _canon(text)
     for label, needles in CUISINE_NEEDLES:
         if any(n in lower for n in needles):
             return label
+    for label, needles in _NAME_CUISINE_HINTS:
+        if any(_has_word(lower, n) for n in needles):
+            return label
     return None
+
+
+def detect_dish_keywords(text: str) -> list[str]:
+    """Dish/format words a partner used ("biryani", "nasi lemak", "ramen"),
+    canonically spelled - used to rank places whose NAME says the same thing
+    ahead of merely-nearer ones with the right cuisine label. See
+    _dish_affinity."""
+    lower = _canon(text)
+    found: list[str] = []
+    for _, needles in _NAME_CUISINE_HINTS:
+        for n in needles:
+            canon_n = _canon(n)
+            if _has_word(lower, canon_n) and canon_n not in found:
+                found.append(canon_n)
+    return found
+
+
+def _dish_affinity(c: dict, dishes: list[str]) -> int:
+    name = _canon(c["name"])
+    return 1 if any(d in name for d in dishes) else 0
+
+
+# Words in a place's own name that say what KIND of place it is rather than
+# which one - stripped before matching a name a partner typed, so "23 Cafe &
+# Kitchen" is found by "23 cafe" and "Agneey's Cuisine" by just "agneey's".
+_NAME_GENERIC_WORDS = {
+    "restoran", "restaurant", "cafe", "kitchen", "cuisine", "kedai", "the", "and", "house",
+    "food", "corner", "bistro", "stall", "cafeteria", "bar", "grill", "sdn", "bhd",
+}
+# Keys that are really a craving, not a name - a place literally called
+# "Spicy" must not get pinned because someone typed "spicy".
+_NAME_STOP_KEYS = (
+    {n for _, needles in CUISINE_NEEDLES for n in needles}
+    | {n for _, needles in _NAME_CUISINE_HINTS for n in needles}
+    | _NAME_GENERIC_WORDS
+    | {"spicy", "mild", "halal", "vegan", "vegetarian", "cheap", "budget", "hot", "lunch", "dinner",
+       "anything", "fine", "tonight", "indian", "malaysian", "asian"}
+)
+_MIN_NAME_KEY_LEN = 4
+
+
+def _words(s: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", s.lower().replace("'", "").replace("’", ""))
+
+
+def _name_keys(name: str) -> set[str]:
+    """Every squashed form of a place name a partner might plausibly type."""
+    tokens = _words(name)
+    core = [t for t in tokens if t not in _NAME_GENERIC_WORDS]
+    keys = {"".join(tokens), "".join(core), "".join(core[:2]), "".join(tokens[:2])}
+    return {k for k in keys if len(k) >= _MIN_NAME_KEY_LEN and k not in _NAME_STOP_KEYS}
+
+
+def find_named_places(text: str, results: list[dict]) -> list[dict]:
+    """The places a couple explicitly named ("maybe 7spice cafe, or
+    agneey's or 23 cafe"), out of `results`. Matches on whole-token windows
+    of the text, squashed, so "7spice" and "7 spice" both find "7 Spice
+    Indian Cuisine" and "23cafe" can't fire inside "123cafe". Nearest
+    first."""
+    tokens = _words(text)
+    if not tokens:
+        return []
+    windows = {"".join(tokens[i:i + n]) for n in (1, 2, 3) for i in range(len(tokens) - n + 1)}
+    return sorted((c for c in results if _name_keys(c["name"]) & windows), key=effective_km)
 
 
 def _infer_cuisine_from_name(name: str, cuisine: str) -> str:
@@ -740,6 +825,7 @@ def get_candidates(
     same_country: bool = True,
     prefer_cuisine: str | None = None,
     route_from: dict | None = None,
+    mention_text: str | None = None,
 ) -> tuple[list[dict], str]:
     """Returns (candidates, source) where source is 'overture', 'osm' or
     'mock'. The AI decision engines see only this curated, capped list -
@@ -765,6 +851,10 @@ def get_candidates(
     from the couple's own position, not from the place they merely
     mentioned - see _finalize_candidates for the trade-off this implies.
 
+    mention_text is the couple's own words - places they NAMED are pinned
+    into the shortlist, and a stated dish ranks places whose name carries it
+    first. See _finalize_candidates.
+
     Raises LocationRequired with no location at all, and PlacesUnavailable
     if a real location was given but nothing usable came back - see each
     class's docstring."""
@@ -781,8 +871,8 @@ def get_candidates(
         results = _fetch_overture(lat, lng, radius_km, country_iso)
         if not results:
             raise PlacesUnavailable("empty")
-        final = _finalize_candidates(lat, lng, results, radius_km, params,
-                                      prefer_cuisine=prefer_cuisine, route_from=route_from)
+        final = _finalize_candidates(lat, lng, results, radius_km, params, prefer_cuisine=prefer_cuisine,
+                                      route_from=route_from, mention_text=mention_text)
         if not final:
             raise PlacesUnavailable("empty")
         return final, "overture"
@@ -821,8 +911,8 @@ def get_candidates(
     # 1-2 real results is still real - return them rather than jumping to
     # the mock set (which is what put NYC restaurants 15,000km away in
     # front of a real user).
-    final = _finalize_candidates(lat, lng, best_results, best_radius_km, params,
-                                  prefer_cuisine=prefer_cuisine, route_from=route_from)
+    final = _finalize_candidates(lat, lng, best_results, best_radius_km, params, prefer_cuisine=prefer_cuisine,
+                                  route_from=route_from, mention_text=mention_text)
     if not final:
         raise PlacesUnavailable("empty")
     return final, "osm"
@@ -831,6 +921,7 @@ def get_candidates(
 def _finalize_candidates(
     lat: float, lng: float, results: list[dict], radius_km: float, params: dict,
     prefer_cuisine: str | None = None, route_from: dict | None = None,
+    mention_text: str | None = None,
 ) -> list[dict]:
     """distance_km is only ever the cheap prefilter - a road route is never
     shorter than the straight line, so it's a safe upper bound, but it can
@@ -853,24 +944,49 @@ def _finalize_candidates(
     above is skipped: a route measured from somewhere other than the search
     centre isn't a valid basis to re-filter that same search's radius
     against, so the pool is taken as-is (already limited to the straight-
-    line radius upstream) and only routed for display."""
-    pool = _select_diverse(results, ROUTE_POOL_SIZE, stratify=params["stratify"], prefer_cuisine=prefer_cuisine)
+    line radius upstream) and only routed for display.
 
-    if route_from:
-        routes = _route_table(route_from["lat"], route_from["lng"], pool)
-        for c in pool:
-            route = routes.get(c["id"])
-            if route is not None:
-                c["route_km"], c["route_min"] = route
-        return _select_diverse(pool, params["max_candidates"], stratify=params["stratify"], prefer_cuisine=prefer_cuisine)
+    mention_text is the couple's own words. It does two things a distance-
+    and-diversity pick can't:
+    - places they NAMED ("maybe 7spice cafe, or agneey's") are pinned: always
+      in the pool, first in the shortlist, exempt from the road-distance
+      radius cut - they asked for them by name, so a long drive isn't a
+      reason to hide them. (They still came from the straight-line radius.)
+    - a stated cuisine or dish turns off the near/mid/far ring sampling. That
+      sampling exists to surface far places when nothing is asked for, but at
+      50km it turned "biryani" into a random handful of unrelated places
+      out of thousands - with a preference, the best MATCHES should win, not
+      a spread."""
+    dishes = detect_dish_keywords(mention_text) if mention_text else []
+    pinned = find_named_places(mention_text, results)[: params["max_candidates"]] if mention_text else []
+    pinned_ids = {c["id"] for c in pinned}
+    rest = [c for c in results if c["id"] not in pinned_ids]
+    stratify = params["stratify"] and not (prefer_cuisine or dishes)
+    pool_room = max(ROUTE_POOL_SIZE - len(pinned), 1)
+    pool = pinned + _select_diverse(
+        rest, pool_room, stratify=stratify, prefer_cuisine=prefer_cuisine, dishes=dishes
+    )
 
-    routes = _route_table(lat, lng, pool)
+    origin = (route_from["lat"], route_from["lng"]) if route_from else (lat, lng)
+    routes = _route_table(origin[0], origin[1], pool)
     for c in pool:
         route = routes.get(c["id"])
         if route is not None:
             c["route_km"], c["route_min"] = route
-    in_radius = [c for c in pool if effective_km(c) <= radius_km + RADIUS_FILTER_EPSILON_KM]
-    return _select_diverse(in_radius, params["max_candidates"], stratify=params["stratify"], prefer_cuisine=prefer_cuisine)
+
+    if route_from:
+        eligible = pool
+    else:
+        eligible = [
+            c for c in pool
+            if c["id"] in pinned_ids or effective_km(c) <= radius_km + RADIUS_FILTER_EPSILON_KM
+        ]
+    kept_pinned = [c for c in eligible if c["id"] in pinned_ids]
+    others = [c for c in eligible if c["id"] not in pinned_ids]
+    return kept_pinned + _select_diverse(
+        others, max(params["max_candidates"] - len(kept_pinned), 0),
+        stratify=stratify, prefer_cuisine=prefer_cuisine, dishes=dishes,
+    )
 
 
 def _pick_diverse(bucket: list[dict], count: int) -> list[dict]:
@@ -893,22 +1009,30 @@ def _pick_diverse(bucket: list[dict], count: int) -> list[dict]:
 
 def _select_diverse(
     results: list[dict], max_candidates: int, stratify: bool = False, prefer_cuisine: str | None = None,
+    dishes: list[str] | None = None,
 ) -> list[dict]:
     """Nearest first, preferring a cuisine we haven't picked yet. For the
     Road Trip tier (`stratify=True`), pick across near/mid/far distance
     rings instead so far-away places genuinely show up rather than the
     nearest 8 dominating a 15km radius.
 
-    prefer_cuisine reserves most of max_candidates for places matching it
-    (nearest first), filling any remainder with the normal diverse pick from
-    what's left - so "we want Indian" doesn't get diluted down to one Indian
-    place lost among 8 diversity picks just because it wasn't the closest."""
+    prefer_cuisine reserves most of max_candidates for places matching it,
+    filling any remainder with the normal diverse pick from what's left - so
+    "we want Indian" doesn't get diluted down to one Indian place lost among
+    8 diversity picks just because it wasn't the closest. Among the
+    preferred, a place whose NAME carries one of `dishes` ("Nusantara
+    Briyani House" for "biryani") comes ahead of a merely-nearer one with
+    only the right cuisine label; otherwise nearest first."""
+    if max_candidates <= 0:
+        return []
     if prefer_cuisine:
         needle = prefer_cuisine.lower()
         preferred = [r for r in results if needle in r["cuisine"].lower()]
         if preferred:
             reserved = max(1, round(max_candidates * 0.75))
-            preferred = sorted(preferred, key=effective_km)[:reserved]
+            preferred = sorted(
+                preferred, key=lambda r: (-_dish_affinity(r, dishes) if dishes else 0, effective_km(r))
+            )[:reserved]
             remaining_needed = max_candidates - len(preferred)
             if remaining_needed <= 0:
                 return preferred

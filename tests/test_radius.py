@@ -425,6 +425,78 @@ def test_detect_cuisine_preference_returns_none_when_nothing_matches():
     assert candidates.detect_cuisine_preference("anything is fine") is None
 
 
+def test_detect_cuisine_preference_reads_a_dish_as_its_cuisine():
+    assert candidates.detect_cuisine_preference("chicken biryani") == "Indian"
+    assert candidates.detect_cuisine_preference("craving nasi lemak") == "Malay"
+
+
+def test_detect_cuisine_preference_accepts_every_biryani_spelling():
+    for spelling in ("biryani", "briyani", "biriyani"):
+        assert candidates.detect_cuisine_preference(f"some {spelling} please") == "Indian"
+
+
+def test_detect_cuisine_preference_dish_match_is_whole_word():
+    # "dosa" is a dish, "dosage" is not.
+    assert candidates.detect_cuisine_preference("check the dosage") is None
+
+
+def test_detect_cuisine_preference_cuisine_word_beats_a_dish_word():
+    assert candidates.detect_cuisine_preference("chinese, maybe biryani") == "Chinese"
+
+
+def test_detect_dish_keywords_unifies_spelling():
+    assert candidates.detect_dish_keywords("Briyani or biriyani, spicy") == ["biryani"]
+
+
+def test_detect_dish_keywords_empty_without_a_dish():
+    assert candidates.detect_dish_keywords("something spicy") == []
+
+
+# --- named places -------------------------------------------------------------
+
+def _named(id_, name, distance_km=1.0, cuisine="Restaurant"):
+    return {**_fake_place(id_, distance_km, cuisine=cuisine), "name": name}
+
+
+def test_find_named_places_matches_what_the_couple_typed():
+    text = "biryani, maybe 7spice cafe, or agneey's or 23 cafe, spicy"
+    places = [
+        _named("spice", "7 Spice Indian Cuisine", 9.6),
+        _named("agneey", "Agneey's Cuisine", 9.9),
+        _named("cafe23", "23 Cafe & Kitchen", 10.0),
+        _named("other", "Restoran Ali", 0.5),
+    ]
+    assert [p["id"] for p in candidates.find_named_places(text, places)] == ["spice", "agneey", "cafe23"]
+
+
+def test_find_named_places_is_whole_token_not_substring():
+    places = [_named("a", "7 Spices Ingredient"), _named("b", "123 Cafe")]
+    assert candidates.find_named_places("7spice or 23 cafe", places) == []
+
+
+def test_find_named_places_ignores_a_craving_that_is_also_a_name():
+    places = [_named("a", "Spicy"), _named("b", "Indian")]
+    assert candidates.find_named_places("something spicy, indian", places) == []
+
+
+def test_find_named_places_returns_nearest_first():
+    places = [_named("far", "Kopi Corner Wangsa", 9.0), _named("near", "Kopi Corner Wangsa", 2.0)]
+    assert [p["id"] for p in candidates.find_named_places("kopi corner wangsa", places)] == ["near", "far"]
+
+
+def test_select_diverse_ranks_a_dish_named_place_ahead_of_a_nearer_one():
+    results = [
+        _named("near", "Restoran Ali", 1.0, cuisine="Indian"),
+        _named("dish", "Nusantara Briyani House", 5.0, cuisine="Indian"),
+    ]
+    picked = candidates._select_diverse(results, 2, prefer_cuisine="Indian", dishes=["biryani"])
+    assert [p["id"] for p in picked] == ["dish", "near"]
+
+
+def test_select_diverse_zero_slots_returns_nothing():
+    assert candidates._select_diverse([_named("a", "A")], 0, prefer_cuisine="Mexican") == []
+
+
 def test_select_diverse_reserves_slots_for_the_preferred_cuisine():
     results = (
         [_fake_place(f"indian{i}", 10 + i, cuisine="Indian") for i in range(2)]
@@ -700,6 +772,49 @@ def test_get_candidates_overture_applies_prefer_cuisine(monkeypatch):
         {"lat": 1.4215, "lng": 103.659}, radius_km=5, prefer_cuisine="Indian"
     )
     assert sum(1 for c in cands if c["cuisine"] == "Indian") == 2
+
+
+def test_get_candidates_pins_named_places_and_skips_the_road_distance_cut(monkeypatch):
+    _install_fake_overture_index(monkeypatch, [
+        _fake_overture_place("named", "7 Spice Indian Cuisine", 1.4216, 103.659, category="indian_restaurant"),
+        _fake_overture_place("near", "Restoran Ali", 1.4217, 103.659, category="indian_restaurant"),
+        _fake_overture_place("winding", "Restoran Abu", 1.4218, 103.659, category="indian_restaurant"),
+    ])
+    # "named" and "winding" are both a 99km drive despite being metres away
+    # (a river with no crossing) - only the one the couple asked for by name
+    # may survive the road-distance radius cut.
+    routes = {"named": (99.0, 90), "near": (0.5, 2), "winding": (99.0, 90)}
+    with patch.object(candidates, "_route_table", side_effect=lambda lat, lng, places: routes):
+        cands, _ = candidates.get_candidates(
+            {"lat": 1.4215, "lng": 103.659}, radius_km=5, mention_text="maybe 7spice tonight",
+        )
+    ids = [c["id"] for c in cands]
+    assert ids[0] == "named"
+    assert "near" in ids
+    assert "winding" not in ids
+
+
+def test_finalize_with_a_preference_ranks_matches_instead_of_sampling_rings():
+    # 30 Indian places 1..30km out. At 50km the near/mid/far ring sampling
+    # used to pull in far-away ones at random; with a stated preference the
+    # best matches (the dish-named place, then the nearest) must win.
+    results = [_named(f"p{i}", f"Restoran {i}", float(i), cuisine="Indian") for i in range(1, 31)]
+    results.append(_named("dish", "Nusantara Briyani House", 25.0, cuisine="Indian"))
+    params = candidates._radius_params(50)
+    assert params["stratify"] is True
+
+    final = candidates._finalize_candidates(
+        1.0, 1.0, results, 50, params, prefer_cuisine="Indian", mention_text="chicken biryani",
+    )
+    assert final[0]["id"] == "dish"
+    assert {c["distance_km"] for c in final} == {1, 2, 3, 4, 5, 6, 7, 25}
+
+
+def test_finalize_without_a_preference_still_samples_rings_at_large_radius():
+    results = [_named(f"p{i}", f"Restoran {i}", float(i), cuisine=f"C{i}") for i in range(1, 31)]
+    params = candidates._radius_params(50)
+    final = candidates._finalize_candidates(1.0, 1.0, results, 50, params)
+    assert max(c["distance_km"] for c in final) >= 20  # far ring still represented
 
 
 def test_list_places_requires_a_real_location():

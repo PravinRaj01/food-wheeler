@@ -127,6 +127,19 @@ def test_decide_biases_the_pool_toward_a_mentioned_cuisine(client, fake_manager)
     assert mock_get.call_args.kwargs.get("prefer_cuisine") == "Indian"
 
 
+def test_decide_reads_a_dish_as_a_cuisine_preference(client, fake_manager):
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        _post(client, partner1={"text": "biryani, maybe agneey's"}, partner2={"text": "chicken biryani"})
+    assert mock_get.call_args.kwargs.get("prefer_cuisine") == "Indian"
+
+
+def test_decide_hands_the_couples_words_to_the_shortlist_for_named_places(client, fake_manager):
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        _post(client, partner1={"text": "maybe 7spice or agneey's"}, partner2={"text": "chicken biryani"})
+    mention_text = mock_get.call_args.kwargs.get("mention_text")
+    assert "7spice" in mention_text and "chicken biryani" in mention_text
+
+
 def test_decide_passes_no_cuisine_preference_when_nothing_is_mentioned(client, fake_manager):
     with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
         _post(client, partner1={"text": "anything's fine"}, partner2={"text": "sure"})
