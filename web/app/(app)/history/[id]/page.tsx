@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft, Navigation } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { getUserIdOrNull } from "@/lib/auth/session";
 import { getDb } from "@/lib/db/client";
 import { getDecisionForUser } from "@/lib/db/queries";
 import { formatDistance } from "@/lib/decide/distance";
 import { HistoryMap } from "@/components/history/history-map";
+import { DirectionsButton } from "@/components/decide/directions-button";
 
 export default async function HistoryDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -17,7 +18,6 @@ export default async function HistoryDetailPage({ params }: { params: Promise<{ 
 
   const w = row.winner;
   const pct = Math.round(row.confidence * 100);
-  const directionsHref = `https://www.openstreetmap.org/directions?from=${w.lat}%2C${w.lng}&to=${w.lat}%2C${w.lng}`;
 
   return (
     <div className="mx-auto max-w-lg px-5 py-10">
@@ -70,14 +70,7 @@ export default async function HistoryDetailPage({ params }: { params: Promise<{ 
       )}
 
       <div className="grid grid-cols-2 gap-3">
-        <a
-          href={directionsHref}
-          target="_blank"
-          rel="noopener"
-          className="flex items-center justify-center gap-1.5 rounded-xl border border-line py-3 text-sm font-medium text-cream transition-colors hover:bg-glass"
-        >
-          <Navigation className="h-4 w-4" /> Directions
-        </a>
+        <DirectionsButton lat={w.lat} lng={w.lng} name={w.name} />
         <Link
           href="/decide"
           className="flex items-center justify-center rounded-xl bg-ember py-3 text-sm font-medium text-ink transition-opacity hover:opacity-90"

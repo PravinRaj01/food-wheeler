@@ -2,10 +2,11 @@
 
 import dynamic from "next/dynamic";
 import { motion } from "motion/react";
-import { Navigation, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import type { Location, MatchResponse } from "@/lib/decide/types";
 import { formatDistance } from "@/lib/decide/distance";
 import { DevComparison } from "@/components/decide/dev-comparison";
+import { DirectionsButton } from "@/components/decide/directions-button";
 import { REVEAL_KICKER } from "@/lib/copy";
 
 const RevealMap = dynamic(() => import("@/components/decide/reveal-map").then((m) => m.RevealMap), {
@@ -39,10 +40,6 @@ export function RevealPanel({
   const p1Hit = w.tags.find((t) => p1Text.toLowerCase().includes(t.replace("_", " ")));
   const p2Hit = w.tags.find((t) => p2Text.toLowerCase().includes(t.replace("_", " ")));
   const runners = response.ranking.filter((r) => r.id !== w.id).slice(0, 2);
-
-  const originLat = userLocation?.lat ?? w.lat;
-  const originLng = userLocation?.lng ?? w.lng;
-  const directionsHref = `https://www.openstreetmap.org/directions?from=${originLat}%2C${originLng}&to=${w.lat}%2C${w.lng}`;
 
   return (
     <motion.div
@@ -94,14 +91,7 @@ export function RevealPanel({
       )}
 
       <div className="grid grid-cols-2 gap-3">
-        <a
-          href={directionsHref}
-          target="_blank"
-          rel="noopener"
-          className="flex items-center justify-center gap-1.5 rounded-xl border border-line py-3 text-sm font-medium text-cream transition-colors hover:bg-glass"
-        >
-          <Navigation className="h-4 w-4" /> Directions
-        </a>
+        <DirectionsButton lat={w.lat} lng={w.lng} name={w.name} />
         <button
           type="button"
           onClick={onStartOver}
