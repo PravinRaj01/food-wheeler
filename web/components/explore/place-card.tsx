@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { session } from "@/lib/safe-storage";
 import type { Place } from "@/lib/decide/types";
 import { formatDistance } from "@/lib/decide/distance";
+import { DirectionsButton } from "@/components/decide/directions-button";
 
 const SEED_KEY = "fw_seeded_candidates";
 const SEED_POOL_SIZE = 6;
@@ -62,17 +63,23 @@ export function PlaceCard({
             ))}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            addToWheel();
-          }}
-          title="Add to tonight's wheel"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ember text-ink transition-opacity hover:opacity-90"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <DirectionsButton
+            lat={place.lat}
+            lng={place.lng}
+            name={place.name}
+            iconOnly
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-line text-cream/70 transition-colors hover:bg-glass"
+          />
+          <button
+            type="button"
+            onClick={addToWheel}
+            title="Add to tonight's wheel"
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-ember text-ink transition-opacity hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </div>
       </div>
     </div>
   );

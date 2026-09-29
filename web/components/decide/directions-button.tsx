@@ -14,11 +14,18 @@ export function DirectionsButton({
   lng,
   name,
   className,
+  iconOnly = false,
 }: {
   lat: number;
   lng: number;
   name: string;
   className?: string;
+  /** Icon with no "Directions" label - for a compact spot like a list card
+   * that already has its own small round action buttons (see
+   * explore/place-card.tsx). Callers still need to pass their own
+   * className for the icon-only shape; the default className below is
+   * sized for the labelled button. */
+  iconOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -26,12 +33,14 @@ export function DirectionsButton({
       <button
         type="button"
         onClick={() => setOpen(true)}
+        aria-label="Directions"
         className={
           className ??
           "flex items-center justify-center gap-1.5 rounded-xl border border-line py-3 text-sm font-medium text-cream transition-colors hover:bg-glass"
         }
       >
-        <Navigation className="h-4 w-4" /> Directions
+        <Navigation className="h-4 w-4" />
+        {!iconOnly && "Directions"}
       </button>
       <DirectionsSheet open={open} onOpenChange={setOpen} lat={lat} lng={lng} name={name} />
     </>
