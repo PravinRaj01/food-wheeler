@@ -351,35 +351,48 @@ def test_decide_omits_search_center_when_nothing_is_mentioned(client, fake_manag
     assert data["search_center"] is None
 
 
-def test_high_confidence_match(client, fake_manager):
+def test_returns_the_full_ranking_best_first(client, fake_manager):
     _, engine_a, _ = fake_manager
     engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
     resp = _post(client, partner1={"text": "spicy patio"}, partner2={"text": "spicy"})
     data = resp.get_json()
-    assert data["status"] == "match"
-    assert data["reason"] == "confident"
-    assert data["winner"]["id"] == "a"
-    assert data["confidence"] == 0.80
+    assert data["status"] == "ranked"
     assert data["engine"]["id"] == "engine_a"
+    # b and c tie on score - the nearer drive (c, 0.3km) is listed first.
+    assert [r["id"] for r in data["ranking"]] == ["a", "c", "b"]
+    assert data["ranking"][0]["probability"] == 0.80
+    assert "winner" not in data and "reason" not in data
+
+
+def test_equal_scores_are_ordered_by_distance_never_picked_for_the_couple(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.50, "b": 0.50, "c": 0.0}
+    data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}).get_json()
+    assert [r["id"] for r in data["ranking"]] == ["a", "b", "c"]  # a is 0.5km, b is 1.0km
+
+
+def test_a_clear_favourite_offers_no_question(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    data = _post(client, partner1={"text": "spicy patio"}, partner2={"text": "spicy"}).get_json()
+    assert data["question"] is None
 
 
 def test_only_one_candidate_survives_skips_scoring_entirely(client, fake_manager):
     # A single candidate (everyone else excluded by a guard, or just one
-    # nearby result) never reaches the engine at all - it's an automatic
-    # "only_option" match at 100% confidence. The frontend's reducer skips
-    # the wheel for exactly this reason (see lib/decide/machine.ts).
+    # nearby result) never reaches the engine at all - a ranked list of one.
     with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "mock")):
         resp = _post(client, partner1={"text": "anything"}, partner2={"text": "anything"})
     data = resp.get_json()
-    assert data["status"] == "match"
-    assert data["reason"] == "only_option"
-    assert data["confidence"] == 1.0
-    assert data["winner"]["id"] == "a"
+    assert data["status"] == "ranked"
+    assert [r["id"] for r in data["ranking"]] == ["a"]
+    assert data["ranking"][0]["probability"] == 1.0
+    assert data["question"] is None
 
 
 def test_only_option_still_includes_dev_mode_comparison(client, fake_manager):
-    # This is the bug this test guards against: the only_option branch used
-    # to return early without ever checking dev_mode, so the comparison
+    # This is the bug this test guards against: the single-candidate branch
+    # used to return early without ever checking dev_mode, so the comparison
     # panel silently never appeared even with Dev Mode on.
     _, engine_a, engine_b = fake_manager
     # A real engine scoring a single candidate trivially returns 100% for it
@@ -391,7 +404,7 @@ def test_only_option_still_includes_dev_mode_comparison(client, fake_manager):
     with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "mock")):
         resp = _post(client, partner1={"text": "anything"}, partner2={"text": "anything"}, dev_mode=True)
     data = resp.get_json()
-    assert data["reason"] == "only_option"
+    assert len(data["ranking"]) == 1
     assert "comparison" in data
     assert "engine_a" in data["comparison"]
     assert "engine_b" in data["comparison"]
@@ -399,41 +412,42 @@ def test_only_option_still_includes_dev_mode_comparison(client, fake_manager):
 
 def test_only_option_dev_mode_survives_an_empty_primary_score(client, fake_manager):
     # FakeEngine's default {} probabilities stands in for a real engine
-    # degenerate-scoring a single candidate - the only_option response must
-    # still succeed (just without a comparison), matching the "Dev Mode can
+    # degenerate-scoring a single candidate - the response must still
+    # succeed (just without a comparison), matching the "Dev Mode can
     # never break the main response" rule the rest of this file follows.
     with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "mock")):
         resp = _post(client, partner1={"text": "anything"}, partner2={"text": "anything"}, dev_mode=True)
     data = resp.get_json()
     assert resp.status_code == 200
-    assert data["reason"] == "only_option"
+    assert len(data["ranking"]) == 1
     assert "comparison" not in data
 
 
-def test_low_confidence_triggers_tiebreaker(client, fake_manager):
+def test_close_top_two_with_a_separating_dimension_offers_a_question(client, fake_manager):
     _, engine_a, _ = fake_manager
     engine_a._probabilities = {"a": 0.45, "b": 0.40, "c": 0.15}
-    resp = _post(client, partner1={"text": "something"}, partner2={"text": "something else"})
-    data = resp.get_json()
-    assert data["status"] == "tiebreaker"
-    assert data["reason"] == "low_confidence"
+    data = _post(client, partner1={"text": "something"}, partner2={"text": "something else"}).get_json()
+    assert data["status"] == "ranked"
     # a and b differ on 'setting' (patio vs indoor) - that should be the question.
     assert data["question"]["id"] == "setting"
+    # ...but it's only offered: the full ranking is there regardless.
+    assert [r["id"] for r in data["ranking"]] == ["a", "b", "c"]
 
 
-def test_exact_tie_detected(client, fake_manager):
+def test_close_top_two_with_nothing_separating_them_offers_no_question(client, fake_manager):
     _, engine_a, _ = fake_manager
-    engine_a._probabilities = {"a": 0.50, "b": 0.49, "c": 0.01}
-    resp = _post(client, partner1={"text": "x"}, partner2={"text": "y"})
-    data = resp.get_json()
-    assert data["status"] == "tiebreaker"
-    assert data["reason"] == "exact_tie"
+    twin = {**FIXED_CANDS[0], "id": "twin", "name": "Casa Fuego Two"}
+    engine_a._probabilities = {"a": 0.45, "twin": 0.44}
+    with patch("app.get_candidates", return_value=([FIXED_CANDS[0], twin], "osm")):
+        data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}).get_json()
+    assert data["question"] is None
+    assert len(data["ranking"]) == 2
 
 
-def test_round_cap_forces_fair_spin(client, fake_manager):
+def test_no_question_is_offered_once_the_round_cap_is_reached(client, fake_manager):
     _, engine_a, _ = fake_manager
     engine_a._probabilities = {"a": 0.45, "b": 0.40, "c": 0.15}
-    resp = _post(
+    data = _post(
         client,
         partner1={"text": "x"}, partner2={"text": "y"},
         round=2,
@@ -441,11 +455,23 @@ def test_round_cap_forces_fair_spin(client, fake_manager):
             {"question_id": "setting", "answer": "patio", "text": "Outdoor patio seating"},
             {"question_id": "service", "answer": "sit_down", "text": "Sit-down table service"},
         ],
-    )
-    data = resp.get_json()
-    assert data["status"] == "match"
-    assert data["reason"] == "fair_spin"
-    assert set(data["wheel_ids"]) <= {"a", "b"}
+    ).get_json()
+    assert data["status"] == "ranked"
+    assert data["question"] is None
+    assert data["rounds_left"] == 0
+
+
+def test_an_answered_question_is_never_asked_again(client, fake_manager):
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.45, "b": 0.40, "c": 0.15}
+    data = _post(
+        client,
+        partner1={"text": "x"}, partner2={"text": "y"},
+        round=1,
+        tiebreakers=[{"question_id": "setting", "answer": "patio", "text": "Outdoor patio seating"}],
+    ).get_json()
+    assert data["status"] == "ranked"
+    assert data["question"] is None or data["question"]["id"] != "setting"
 
 
 def test_decide_returns_503_when_every_overpass_endpoint_fails(client, fake_manager):
@@ -490,7 +516,7 @@ def test_decide_discards_mock_sourced_candidates_in_and_refetches(client, fake_m
             candidates=FIXED_CANDS, source="mock",
         )
     mock_get.assert_called_once()
-    assert resp.get_json()["winner"]["id"] == "fresh"
+    assert resp.get_json()["ranking"][0]["id"] == "fresh"
 
 
 def test_decide_discards_candidates_in_that_drifted_outside_the_radius(client, fake_manager):
@@ -504,7 +530,7 @@ def test_decide_discards_candidates_in_that_drifted_outside_the_radius(client, f
             candidates=far, source="osm",
         )
     mock_get.assert_called_once()
-    assert resp.get_json()["winner"]["id"] == "fresh"
+    assert resp.get_json()["ranking"][0]["id"] == "fresh"
 
 
 def test_decide_trusts_fresh_in_radius_candidates_in_without_refetching(client, fake_manager):
@@ -519,8 +545,8 @@ def test_decide_trusts_fresh_in_radius_candidates_in_without_refetching(client, 
         )
     mock_get.assert_not_called()
     data = resp.get_json()
-    assert data["status"] == "match"
-    assert data["winner"]["id"] == "a"
+    assert data["status"] == "ranked"
+    assert data["ranking"][0]["id"] == "a"
 
 
 def test_budget_guard_excludes_expensive_option(client, fake_manager):
@@ -534,8 +560,8 @@ def test_budget_guard_excludes_expensive_option(client, fake_manager):
     engine_a._probabilities = _predict
     resp = _post(client, partner1={"text": "under $20 please"}, partner2={"text": "anything"})
     data = resp.get_json()
-    assert data["status"] == "match"
-    assert data["winner"]["id"] == "c"
+    assert data["status"] == "ranked"
+    assert data["ranking"][0]["id"] == "c"
 
 
 def test_budget_guard_recognizes_ringgit(client, fake_manager):
@@ -550,7 +576,7 @@ def test_budget_guard_recognizes_ringgit(client, fake_manager):
 
     engine_a._probabilities = _predict
     resp = _post(client, partner1={"text": "under RM20 please"}, partner2={"text": "anything"})
-    assert resp.get_json()["winner"]["id"] == "c"
+    assert resp.get_json()["ranking"][0]["id"] == "c"
 
 
 def test_budget_guard_low_tier_keyword_with_no_number(client, fake_manager):
@@ -563,7 +589,7 @@ def test_budget_guard_low_tier_keyword_with_no_number(client, fake_manager):
 
     engine_a._probabilities = _predict
     resp = _post(client, partner1={"text": "keep it cheap"}, partner2={"text": "anything"})
-    assert resp.get_json()["winner"]["id"] == "c"
+    assert resp.get_json()["ranking"][0]["id"] == "c"
 
 
 def test_budget_guard_high_tier_keyword_excludes_cheapest(client, fake_manager):
@@ -576,7 +602,7 @@ def test_budget_guard_high_tier_keyword_excludes_cheapest(client, fake_manager):
 
     engine_a._probabilities = _predict
     resp = _post(client, partner1={"text": "let's treat ourselves tonight"}, partner2={"text": "anything"})
-    assert resp.get_json()["status"] in ("match", "tiebreaker")
+    assert resp.get_json()["status"] == "ranked"
 
 
 def test_exclusion_guard_removes_burgers(client, fake_manager):
@@ -589,7 +615,7 @@ def test_exclusion_guard_removes_burgers(client, fake_manager):
 
     engine_a._probabilities = _predict
     resp = _post(client, partner1={"text": "no burgers please"}, partner2={"text": "anything"})
-    assert resp.get_json()["status"] in ("match", "tiebreaker")
+    assert resp.get_json()["status"] == "ranked"
 
 
 def test_diet_guard_filters_to_halal(client, fake_manager):
@@ -603,7 +629,7 @@ def test_diet_guard_filters_to_halal(client, fake_manager):
     engine_a._probabilities = _predict
     with patch("app.get_candidates", return_value=(DIET_CANDS, "mock")):
         resp = _post(client, partner1={"text": "we need halal"}, partner2={"text": "anything"})
-    assert resp.get_json()["winner"]["id"] == "halal_place"
+    assert resp.get_json()["ranking"][0]["id"] == "halal_place"
 
 
 def test_diet_guard_filters_to_vegetarian(client, fake_manager):
@@ -619,7 +645,7 @@ def test_diet_guard_filters_to_vegetarian(client, fake_manager):
     engine_a._probabilities = _predict
     with patch("app.get_candidates", return_value=(DIET_CANDS, "mock")):
         resp = _post(client, partner1={"text": "I'm vegetarian"}, partner2={"text": "anything"})
-    assert resp.get_json()["winner"]["id"] == "veggie_place"
+    assert resp.get_json()["ranking"][0]["id"] == "veggie_place"
 
 
 def test_negated_diet_is_not_a_requirement(client, fake_manager):
@@ -639,7 +665,7 @@ def test_negated_diet_is_not_a_requirement(client, fake_manager):
     engine_a._probabilities = _predict
     with patch("app.get_candidates", return_value=(DIET_CANDS, "mock")):
         resp = _post(client, partner1={"text": "no vegan please"}, partner2={"text": "anything"})
-    assert resp.get_json()["status"] in ("match", "tiebreaker")
+    assert resp.get_json()["status"] == "ranked"
 
 
 def test_unknown_engine_returns_400(client, fake_manager):
@@ -665,7 +691,7 @@ def test_secondary_engine_failure_falls_back_to_default(client, fake_manager):
     engine_b._raise_error = True
     resp = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, engine="engine_b")
     data = resp.get_json()
-    assert data["status"] == "match"
+    assert data["status"] == "ranked"
     assert data["engine"]["id"] == "engine_a"
     assert data["engine"]["fallback_from"] == "engine_b"
 
@@ -686,7 +712,7 @@ def test_dev_mode_includes_comparison(client, fake_manager):
     engine_b._probabilities = {"a": 0.20, "b": 0.70, "c": 0.10}
     resp = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, dev_mode=True)
     data = resp.get_json()
-    assert data["status"] == "match"
+    assert data["status"] == "ranked"
     comparison = data["comparison"]
     assert comparison["engine_a"]["primary"] is True
     assert comparison["engine_b"]["primary"] is False
@@ -700,7 +726,7 @@ def test_dev_mode_secondary_failure_does_not_break_response(client, fake_manager
     engine_b._raise_error = True
     resp = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, dev_mode=True)
     data = resp.get_json()
-    assert data["status"] == "match"
+    assert data["status"] == "ranked"
     assert data["comparison"]["engine_b"]["error"] == "ENGINE_UNAVAILABLE"
 
 
@@ -715,17 +741,24 @@ def test_dev_mode_ignored_when_disallowed(client, fake_manager, monkeypatch):
 
 # --- deterministic_tiebreak uses real driving distance when it has one -----
 
-def test_deterministic_tiebreak_prefers_route_km_over_straight_line_distance():
+def test_rank_tiebreak_key_prefers_route_km_over_straight_line_distance():
     # "far_by_line" looks closer by distance_km alone, but its real route is
-    # longer - the tiebreak must pick on the drive, not the crow-flies line.
+    # longer - ordering must follow the drive, not the crow-flies line.
     far_by_line = {"id": "a", "price": "$$", "distance_km": 1.0, "route_km": 9.0}
     near_by_road = {"id": "b", "price": "$$", "distance_km": 5.0, "route_km": 2.0}
-    winner = app_module.deterministic_tiebreak([far_by_line, near_by_road])
-    assert winner["id"] == "b"
+    ordered = sorted([far_by_line, near_by_road], key=app_module.rank_tiebreak_key)
+    assert [c["id"] for c in ordered] == ["b", "a"]
 
 
-def test_deterministic_tiebreak_falls_back_to_distance_km_without_a_route():
+def test_rank_tiebreak_key_falls_back_to_distance_km_without_a_route():
     nearer = {"id": "a", "price": "$$", "distance_km": 1.0}
     farther = {"id": "b", "price": "$$", "distance_km": 5.0}
-    winner = app_module.deterministic_tiebreak([farther, nearer])
-    assert winner["id"] == "a"
+    ordered = sorted([farther, nearer], key=app_module.rank_tiebreak_key)
+    assert [c["id"] for c in ordered] == ["a", "b"]
+
+
+def test_rank_tiebreak_key_then_prefers_the_cheaper_place():
+    pricey = {"id": "a", "price": "$$$", "distance_km": 1.0}
+    cheap = {"id": "b", "price": "$", "distance_km": 1.0}
+    ordered = sorted([pricey, cheap], key=app_module.rank_tiebreak_key)
+    assert [c["id"] for c in ordered] == ["b", "a"]

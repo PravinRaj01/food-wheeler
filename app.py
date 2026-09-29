@@ -137,16 +137,16 @@ def rate_limited(f):
 
 
 MAX_INPUT_CHARS = 500
-TIE_EPSILON = 0.02
 MAX_TIEBREAKER_ROUNDS = 2
-CONFIDENCE_THRESHOLDS = {"laya": 0.70, "gliner": 0.70, "clm_8b": 0.70}
-DEFAULT_THRESHOLD = 0.70
+# The second-ranked place counts as "close" to the top pick when its score is
+# at least this fraction of the top's. Engines split probability across every
+# candidate, so a fixed absolute bar (the old 70%) was almost unreachable with
+# 8 candidates and nearly every round fell into a forced question or a
+# pre-decided "fair spin" - a RATIO between the leaders says what actually
+# matters: is there a real gap, or is the choice a coin flip.
+CLOSE_RATIO = 0.8
 DEV_MODE_ALLOWED = os.environ.get("DEV_MODE_ALLOWED", "1") != "0"
 SECONDARY_ENGINE_TIMEOUT_S = 8
-
-
-def confidence_threshold(engine_id: str) -> float:
-    return CONFIDENCE_THRESHOLDS.get(engine_id, DEFAULT_THRESHOLD)
 
 
 # ---------------------------------------------------------------------------
@@ -525,19 +525,13 @@ def build_state(partner1_text: str, partner2_text: str, tiebreakers: list[dict])
 
 
 # ---------------------------------------------------------------------------
-# Deterministic tie-break, used only when no mediator dimension separates
-# the tied venues (so asking a question would be pointless).
+# Ranking tie-break: only ever used to ORDER places whose engine scores are
+# equal - nearest by real drive first, then cheapest. It never picks a winner
+# for the couple any more; the ranked list is the answer, and if they'd
+# rather leave it to chance the wheel does that honestly (weighted by score).
 # ---------------------------------------------------------------------------
-def deterministic_tiebreak(tied: list[dict]) -> dict:
-    def sort_key(c):
-        return (effective_km(c), PRICE_TIER_MAX.get(c["price"].lstrip("~"), 999))
-
-    ranked = sorted(tied, key=sort_key)
-    best = ranked[0]
-    if len(ranked) > 1 and sort_key(ranked[0]) == sort_key(ranked[1]):
-        tied_best = [c for c in ranked if sort_key(c) == sort_key(ranked[0])]
-        best = secrets.choice(tied_best)
-    return best
+def rank_tiebreak_key(c: dict) -> tuple[float, int]:
+    return (effective_km(c), PRICE_TIER_MAX.get(c["price"].lstrip("~"), 999))
 
 
 # ---------------------------------------------------------------------------
@@ -574,86 +568,56 @@ def _validate(body: dict):
 
 
 # ---------------------------------------------------------------------------
-# Ranking, ties and branching — identical for every engine. This is what
-# lets the One Joint Tap mediator flow behave the same no matter which
-# engine answered.
+# Ranking — identical for every engine. The response is the engine's full
+# opinion, best first; the couple picks from it (or spins, weighted by these
+# same scores, or answers one optional question if the top two are close).
+# Nothing here decides FOR them: the old flow pre-picked a winner - the
+# nearest place, when nothing separated the leaders - and then animated a
+# wheel landing on it.
 # ---------------------------------------------------------------------------
-def rank_and_branch(probs: dict, filtered: list[dict], round_num: int, source: str,
-                     cands: list[dict], asked_dims: set[str], engine_meta: dict, t0: float) -> dict:
+def build_ranked_payload(probs: dict, filtered: list[dict], round_num: int, source: str,
+                          cands: list[dict], asked_dims: set[str], engine_meta: dict, t0: float) -> dict:
     by_id = {c["id"]: c for c in filtered}
     ranking = sorted(
-        ({"id": cid, "name": by_id[cid]["name"], "probability": p, "color": by_id[cid]["color"]}
-         for cid, p in probs.items() if cid in by_id),
-        key=lambda r: r["probability"], reverse=True,
+        (
+            {"id": cid, "name": by_id[cid]["name"], "probability": round(p, 4), "color": by_id[cid]["color"]}
+            for cid, p in probs.items() if cid in by_id
+        ),
+        # Highest score first; equal scores fall back to the nearest drive,
+        # then the cheapest - only ever an ordering, see rank_tiebreak_key.
+        key=lambda r: (-r["probability"], *rank_tiebreak_key(by_id[r["id"]])),
     )
     if not ranking:
         raise ValueError("engine returned no usable probabilities for the given candidates")
 
-    threshold = confidence_threshold(engine_meta["id"])
-    top = ranking[0]
-    second = ranking[1] if len(ranking) > 1 else None
-    is_tie = second is not None and (top["probability"] - second["probability"]) < TIE_EPSILON
+    return _ranked_response(ranking, by_id, round_num, source, cands, asked_dims, engine_meta, t0)
 
-    if round_num >= MAX_TIEBREAKER_ROUNDS:
-        tied_group = [r for r in ranking if top["probability"] - r["probability"] < TIE_EPSILON] \
-            if is_tie else ranking[:2]
-        tied_ids = {r["id"] for r in tied_group}
-        winner_cand = deterministic_tiebreak([c for c in filtered if c["id"] in tied_ids])
-        winner_row = next(r for r in ranking if r["id"] == winner_cand["id"])
-        return _match_payload(winner_cand, ranking, "fair_spin", winner_row["probability"],
-                               source, cands, round_num, t0, engine_meta, wheel_ids=list(tied_ids))
 
-    if top["probability"] >= threshold and not is_tie:
-        winner_cand = by_id[top["id"]]
-        return _match_payload(winner_cand, ranking, "confident", top["probability"],
-                               source, cands, round_num, t0, engine_meta)
-
-    top1_cand = by_id[top["id"]]
-    top2_cand = by_id[second["id"]] if second else None
-    question = build_mediator_question(top1_cand, top2_cand, asked_dims) if top2_cand else None
-
-    if question is None:
-        # No dimension separates the leaders — resolve deterministically
-        # instead of asking a pointless question.
-        tied_group = [top1_cand] + ([top2_cand] if top2_cand else [])
-        winner_cand = deterministic_tiebreak(tied_group)
-        winner_row = next(r for r in ranking if r["id"] == winner_cand["id"])
-        return _match_payload(winner_cand, ranking, "fair_spin", winner_row["probability"],
-                               source, cands, round_num, t0, engine_meta,
-                               wheel_ids=[c["id"] for c in tied_group])
-
-    reason = "exact_tie" if is_tie else "low_confidence"
+def _ranked_response(ranking: list[dict], by_id: dict, round_num: int, source: str, cands: list[dict],
+                      asked_dims: set[str], engine_meta: dict, t0: float) -> dict:
     return {
-        "status": "tiebreaker",
-        "reason": reason,
-        "confidence": round(top["probability"], 4),
-        "round": round_num,
+        "status": "ranked",
+        "ranking": ranking,
+        "question": _optional_question(ranking, by_id, round_num, asked_dims),
         "rounds_left": MAX_TIEBREAKER_ROUNDS - round_num,
-        "question": question,
-        "contenders": [top, second],
-        "candidates": cands,
         "source": source,
-        "engine": engine_meta,
-    }
-
-
-def _match_payload(winner_cand, ranking, reason, confidence, source, cands, round_num, t0,
-                    engine_meta, wheel_ids=None):
-    payload = {
-        "status": "match",
-        "reason": reason,
-        "confidence": round(confidence, 4),
-        "source": source,
-        "winner": winner_cand,
-        "ranking": [{**r, "probability": round(r["probability"], 4)} for r in ranking],
         "candidates": cands,
         "round": round_num,
         "latency_ms": round((time.time() - t0) * 1000, 1),
         "engine": engine_meta,
     }
-    if wheel_ids:
-        payload["wheel_ids"] = wheel_ids
-    return payload
+
+
+def _optional_question(ranking: list[dict], by_id: dict, round_num: int, asked_dims: set[str]) -> dict | None:
+    """A question is only OFFERED (never forced) when all three hold: the top
+    two are genuinely close, a dimension actually separates them, and rounds
+    remain. Anything else and the ranking stands on its own."""
+    if len(ranking) < 2 or round_num >= MAX_TIEBREAKER_ROUNDS:
+        return None
+    top, second = ranking[0], ranking[1]
+    if top["probability"] <= 0 or second["probability"] / top["probability"] < CLOSE_RATIO:
+        return None
+    return build_mediator_question(by_id[top["id"]], by_id[second["id"]], asked_dims)
 
 
 # ---------------------------------------------------------------------------
@@ -883,8 +847,11 @@ def decide():
         winner = filtered[0]
         engine_meta = {"id": engine.id, "label": engine.label, "score_type": "probability",
                         "raw_top": None, "fallback_from": None, "latency_ms": 0.0}
-        payload = _match_payload(winner, [{**winner, "probability": 1.0}], "only_option", 1.0,
-                                  source, cands, round_num, t0, engine_meta)
+        # A ranked list of one - nothing to choose between, but the same
+        # contract, so the frontend has a single shape to render.
+        only = [{"id": winner["id"], "name": winner["name"], "probability": 1.0, "color": winner["color"]}]
+        payload = _ranked_response(only, {winner["id"]: winner}, round_num, source, cands, asked_dims,
+                                    engine_meta, t0)
         payload["country"] = country
         payload["search_center"] = search_center
         if dev_mode:
@@ -929,17 +896,18 @@ def decide():
     }
 
     try:
-        payload = rank_and_branch(result.probabilities, filtered, round_num, source, cands,
-                                   asked_dims, engine_meta, t0)
+        payload = build_ranked_payload(result.probabilities, filtered, round_num, source, cands,
+                                        asked_dims, engine_meta, t0)
     except ValueError as exc:
         return jsonify({"status": "error", "code": "MODEL_ERROR", "message": str(exc)}), 500
     payload["country"] = country
     payload["search_center"] = search_center
 
     if dev_mode:
-        winner_id = payload.get("winner", {}).get("id")
+        # The reference "winner" for the engine comparison is simply the
+        # #1 ranked place - there is no separate pre-decided winner now.
         payload["comparison"] = run_dev_mode_comparison(
-            engine_used.id, result, state, filtered, exclusions, winner_id)
+            engine_used.id, result, state, filtered, exclusions, payload["ranking"][0]["id"])
 
     return jsonify(payload)
 

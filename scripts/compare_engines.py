@@ -1,7 +1,7 @@
 """
 Runs a handful of sample couples through Laya and GLiNER and prints a
 top-pick / confidence / latency table, to sanity-check real behavior and
-help tune CONFIDENCE_THRESHOLDS. Run from the project root:
+see how far apart the engines rank each couple. Run from the project root:
 
     .venv/Scripts/python.exe scripts/compare_engines.py
 """
