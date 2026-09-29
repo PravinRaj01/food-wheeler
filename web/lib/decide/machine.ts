@@ -63,6 +63,7 @@ export type Action =
   | { type: "SET_P2_TEXT"; text: string; mode?: "typed" | "voice" }
   | { type: "OPEN_CARD"; card: 1 | 2 }
   | { type: "CLOSE_CARD" }
+  | { type: "REDO_CARD"; card: 1 | 2 }
   | { type: "SEAL_CARD"; card: 1 | 2 }
   | { type: "SEAL_NO_PREFERENCE"; card: 1 | 2 }
   | { type: "SET_ENGINE"; engine: EngineId }
@@ -122,25 +123,27 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
       return { ...state, p1Text: action.text, p1Mode: action.mode ?? state.p1Mode };
     case "SET_P2_TEXT":
       return { ...state, p2Text: action.text, p2Mode: action.mode ?? state.p2Mode };
-    // Opening a card un-seals it - reopening to edit means re-sealing (or
-    // "Anything's fine") before it counts again. Either partner can open
-    // either card, in any order; a no-op once the engine is locked
-    // (already submitted this round).
-    //
-    // If the card was SEALED, its text is cleared on the way back open -
-    // both partners share one phone, so a "sealed" card is the only privacy
-    // this app can offer, and reopening it must never redisplay what was
-    // typed (that's a real leak this app shipped with, not a hypothetical:
-    // tapping a sealed card just showed the answer). A card that was never
-    // sealed (still mid-draft, closed with x instead of Done) keeps its
-    // draft - nothing was ever "sealed away" for it to leak.
+    // Opening a card just opens it - whether that shows the normal editable
+    // form or a blurred "sealed" peek is entirely up to whether the card is
+    // currently sealed, decided at render time (see PartnerCardPanel's
+    // `sealed` prop), not by anything this action changes. Neither the seal
+    // nor the text is touched here: both partners share one phone, so a
+    // sealed card must be safe to just glance at (curiosity, or "did I
+    // already answer this?") without that act itself exposing the answer
+    // OR silently discarding it - only an explicit REDO_CARD does either.
+    // A no-op once the engine is locked (already submitted this round).
     case "OPEN_CARD":
-      if (state.engineLocked) return state;
-      return action.card === 1
-        ? { ...state, openCard: 1, p1Sealed: false, ...(state.p1Sealed && { p1Text: "", p1Mode: "typed" as const }) }
-        : { ...state, openCard: 2, p2Sealed: false, ...(state.p2Sealed && { p2Text: "", p2Mode: "typed" as const }) };
+      return state.engineLocked ? state : { ...state, openCard: action.card };
     case "CLOSE_CARD":
       return { ...state, openCard: null };
+    // Explicit "throw this answer away and start over" - the only thing
+    // that clears a sealed card's text. Leaves it open (now in edit mode,
+    // since it's no longer sealed) rather than closing, so the redo lands
+    // straight in the textarea.
+    case "REDO_CARD":
+      return action.card === 1
+        ? { ...state, p1Sealed: false, p1Text: "", p1Mode: "typed" }
+        : { ...state, p2Sealed: false, p2Text: "", p2Mode: "typed" };
     case "SEAL_CARD":
       if (action.card === 1) {
         if (!state.p1Text.trim()) return state;

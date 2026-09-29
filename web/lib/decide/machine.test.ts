@@ -101,13 +101,15 @@ describe("decideReducer", () => {
     expect(s.p1Mode).toBe("voice");
   });
 
-  it("OPEN_CARD reopening a SEALED card clears its text - no peeking at what was typed", () => {
+  it("OPEN_CARD on a SEALED card just opens it - the seal and its text are untouched (a peek, not a leak or a wipe)", () => {
     const sealed = { ...initialState("laya", false), p1Sealed: true, p1Text: "spicy", p1Mode: "voice" as const };
     const s = decideReducer(sealed, { type: "OPEN_CARD", card: 1 });
     expect(s.openCard).toBe(1);
-    expect(s.p1Sealed).toBe(false);
-    expect(s.p1Text).toBe("");
-    expect(s.p1Mode).toBe("typed");
+    // Still sealed - PartnerCardPanel renders this as a blurred peek with a
+    // Redo option, not the editable form, exactly because it's still true.
+    expect(s.p1Sealed).toBe(true);
+    expect(s.p1Text).toBe("spicy");
+    expect(s.p1Mode).toBe("voice");
   });
 
   it("OPEN_CARD on an UNSEALED card (a closed-but-not-sealed draft) keeps its text", () => {
@@ -129,6 +131,24 @@ describe("decideReducer", () => {
     const s = decideReducer(open, { type: "CLOSE_CARD" });
     expect(s.openCard).toBeNull();
     expect(s.p1Sealed).toBe(false);
+  });
+
+  it("CLOSE_CARD after peeking at a sealed card (no Redo) leaves it sealed with its answer intact", () => {
+    const peeking = { ...initialState("laya", false), openCard: 1 as const, p1Sealed: true, p1Text: "spicy" };
+    const s = decideReducer(peeking, { type: "CLOSE_CARD" });
+    expect(s.openCard).toBeNull();
+    expect(s.p1Sealed).toBe(true);
+    expect(s.p1Text).toBe("spicy");
+  });
+
+  it("REDO_CARD clears a sealed card's text and un-seals it, leaving it open for editing", () => {
+    const sealed = { ...initialState("laya", false), openCard: 1 as const, p1Sealed: true, p1Text: "spicy", p1Mode: "voice" as const };
+    const s = decideReducer(sealed, { type: "REDO_CARD", card: 1 });
+    expect(s.p1Sealed).toBe(false);
+    expect(s.p1Text).toBe("");
+    expect(s.p1Mode).toBe("typed");
+    // Stays open - the redo lands straight in the (now empty) textarea.
+    expect(s.openCard).toBe(1);
   });
 
   it("SEAL_CARD is a no-op when that card's text is blank", () => {

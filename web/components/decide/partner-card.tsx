@@ -53,7 +53,13 @@ export function PartnerCardCollapsed({
       onClick={onOpen}
       disabled={disabled}
       className={cn(
-        "glass flex h-32 flex-col items-center justify-center gap-2 rounded-2xl p-4 text-center transition-opacity",
+        // w-full/h-full: this sits inside a plain wrapper div now (see
+        // decide/page.tsx - each grid slot is a permanently-present box, so
+        // the SIBLING card's box never changes when this one opens), and a
+        // <button> doesn't stretch to fill its parent the way a direct grid
+        // item does automatically - without these two it shrank to its
+        // content's width, opening up a gap that wasn't there before.
+        "glass flex h-full w-full flex-col items-center justify-center gap-2 rounded-2xl p-4 text-center transition-opacity",
         disabled && "cursor-not-allowed opacity-60",
       )}
     >
@@ -79,24 +85,32 @@ export function PartnerCardPanel({
   number,
   label,
   text,
+  sealed,
   onTextChange,
   placeholder,
   chipGroups,
   accentVar,
   onDone,
   onNoPreference,
+  onRedo,
   onClose,
   onSpeechError,
 }: {
   number: 1 | 2;
   label: string;
   text: string;
+  /** Sealed cards render as a blurred peek with a Redo option instead of
+   * the editable form - opening one is safe to do (see decide/page.tsx's
+   * OPEN_CARD), but must never itself reveal or discard the answer; only
+   * tapping Redo does either. */
+  sealed: boolean;
   onTextChange: (text: string, mode: "typed" | "voice") => void;
   placeholder: string;
   chipGroups: ChipGroup[];
   accentVar: "--p1" | "--p2";
   onDone: () => void;
   onNoPreference: () => void;
+  onRedo: () => void;
   onClose: () => void;
   onSpeechError?: (message: string) => void;
 }) {
@@ -150,62 +164,87 @@ export function PartnerCardPanel({
         </button>
       </div>
 
-      <div className="relative">
-        <textarea
-          autoFocus
-          rows={3}
-          maxLength={500}
-          value={text}
-          onChange={(e) => onTextChange(e.target.value, "typed")}
-          placeholder={placeholder}
-          className="w-full resize-none rounded-xl border border-line bg-glass px-4 py-3 pr-12 text-sm text-cream placeholder-cream/30 outline-none focus:border-ember focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember"
-        />
-        {speech.isSupported && (
-          <MicButton listening={speech.isListening} disabled={micBlocked} onClick={speech.toggle} />
-        )}
-      </div>
-      <div className="mt-1 min-h-[1rem] text-xs text-cream/40 italic">{interim && `"${interim}"`}</div>
-
-      <div className="mt-3 space-y-2">
-        {chipGroups.map((group) => (
-          <div key={group.label}>
-            <p className="mb-1 text-[10px] font-medium tracking-wide text-cream/35 uppercase">{group.label}</p>
-            <div className="flex flex-wrap gap-1.5">
-              {group.chips.map((chip) => (
-                <button
-                  key={chip}
-                  type="button"
-                  onClick={() => {
-                    const sep = text && !/[\s,]$/.test(text) ? ", " : "";
-                    onTextChange(text + sep + chip, "typed");
-                  }}
-                  className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors hover:text-cream"
-                >
-                  {chip}
-                </button>
-              ))}
-            </div>
+      {sealed ? (
+        <>
+          <div className="rounded-xl border border-line bg-glass px-4 py-3">
+            <p aria-hidden className="line-clamp-3 text-sm break-words whitespace-pre-wrap text-cream/70 blur-sm select-none">
+              {text || NO_PREFERENCE_LABEL}
+            </p>
           </div>
-        ))}
-      </div>
+          <p className="mt-2 flex items-center gap-1 text-xs text-cream/50">
+            <Lock className="h-3 w-3" />
+            {SEALED_LABEL} — redo to change it
+          </p>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={onRedo}
+              className="rounded-full bg-ember px-5 py-2 text-sm font-medium text-ink transition-opacity hover:opacity-90"
+            >
+              Redo
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="relative">
+            <textarea
+              autoFocus
+              rows={3}
+              maxLength={500}
+              value={text}
+              onChange={(e) => onTextChange(e.target.value, "typed")}
+              placeholder={placeholder}
+              className="w-full resize-none rounded-xl border border-line bg-glass px-4 py-3 pr-12 text-sm text-cream placeholder-cream/30 outline-none focus:border-ember focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember"
+            />
+            {speech.isSupported && (
+              <MicButton listening={speech.isListening} disabled={micBlocked} onClick={speech.toggle} />
+            )}
+          </div>
+          <div className="mt-1 min-h-[1rem] text-xs text-cream/40 italic">{interim && `"${interim}"`}</div>
 
-      <div className="mt-4 flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={onNoPreference}
-          className="text-xs text-cream/50 underline underline-offset-4 hover:text-cream"
-        >
-          {NO_PREFERENCE_LABEL}
-        </button>
-        <button
-          type="button"
-          onClick={onDone}
-          disabled={!text.trim()}
-          className="rounded-full bg-ember px-5 py-2 text-sm font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Done
-        </button>
-      </div>
+          <div className="mt-3 space-y-2">
+            {chipGroups.map((group) => (
+              <div key={group.label}>
+                <p className="mb-1 text-[10px] font-medium tracking-wide text-cream/35 uppercase">{group.label}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {group.chips.map((chip) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      onClick={() => {
+                        const sep = text && !/[\s,]$/.test(text) ? ", " : "";
+                        onTextChange(text + sep + chip, "typed");
+                      }}
+                      className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors hover:text-cream"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={onNoPreference}
+              className="text-xs text-cream/50 underline underline-offset-4 hover:text-cream"
+            >
+              {NO_PREFERENCE_LABEL}
+            </button>
+            <button
+              type="button"
+              onClick={onDone}
+              disabled={!text.trim()}
+              className="rounded-full bg-ember px-5 py-2 text-sm font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Done
+            </button>
+          </div>
+        </>
+      )}
     </motion.div>
   );
 }

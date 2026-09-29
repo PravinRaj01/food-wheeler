@@ -546,12 +546,14 @@ export default function DecidePage() {
                 number={1}
                 label={state.p1Name || "Partner One"}
                 text={state.p1Text}
+                sealed={state.p1Sealed}
                 onTextChange={(text, mode) => dispatch({ type: "SET_P1_TEXT", text, mode })}
                 placeholder="Spicy, under RM30, somewhere close…"
                 chipGroups={CHIP_GROUPS}
                 accentVar="--p1"
                 onDone={() => dispatch({ type: "SEAL_CARD", card: 1 })}
                 onNoPreference={() => dispatch({ type: "SEAL_NO_PREFERENCE", card: 1 })}
+                onRedo={() => dispatch({ type: "REDO_CARD", card: 1 })}
                 onClose={() => dispatch({ type: "CLOSE_CARD" })}
                 onSpeechError={toast}
               />
@@ -562,12 +564,14 @@ export default function DecidePage() {
                 number={2}
                 label={state.p2Name || "Partner Two"}
                 text={state.p2Text}
+                sealed={state.p2Sealed}
                 onTextChange={(text, mode) => dispatch({ type: "SET_P2_TEXT", text, mode })}
                 placeholder="Casual, a patio if possible, no burgers…"
                 chipGroups={CHIP_GROUPS}
                 accentVar="--p2"
                 onDone={() => dispatch({ type: "SEAL_CARD", card: 2 })}
                 onNoPreference={() => dispatch({ type: "SEAL_NO_PREFERENCE", card: 2 })}
+                onRedo={() => dispatch({ type: "REDO_CARD", card: 2 })}
                 onClose={() => dispatch({ type: "CLOSE_CARD" })}
                 onSpeechError={toast}
               />
