@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 from meals import filter_for_meal
+from musts import filter_for_musts, has_sign
 
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
@@ -829,6 +830,7 @@ def get_candidates(
     route_from: dict | None = None,
     mention_text: str | None = None,
     meal: str | None = None,
+    musts: list[str] | None = None,
 ) -> tuple[list[dict], str]:
     """Returns (candidates, source) where source is 'overture', 'osm' or
     'mock'. The AI decision engines see only this curated, capped list -
@@ -861,6 +863,10 @@ def get_candidates(
     meal (see meals.detect_meal) keeps the shortlist to places that suit it -
     at lunch, no ice-cream or waffle shops - except places the couple named.
 
+    musts (see musts.detect_musts) are foods a partner DEMANDED ("must have
+    chicken"): places that can't serve them are dropped and places that
+    clearly do are preferred for the shortlist.
+
     Raises LocationRequired with no location at all, and PlacesUnavailable
     if a real location was given but nothing usable came back - see each
     class's docstring."""
@@ -878,7 +884,7 @@ def get_candidates(
         if not results:
             raise PlacesUnavailable("empty")
         final = _finalize_candidates(lat, lng, results, radius_km, params, prefer_cuisine=prefer_cuisine,
-                                      route_from=route_from, mention_text=mention_text, meal=meal)
+                                      route_from=route_from, mention_text=mention_text, meal=meal, musts=musts)
         if not final:
             raise PlacesUnavailable("empty")
         return final, "overture"
@@ -918,7 +924,7 @@ def get_candidates(
     # the mock set (which is what put NYC restaurants 15,000km away in
     # front of a real user).
     final = _finalize_candidates(lat, lng, best_results, best_radius_km, params, prefer_cuisine=prefer_cuisine,
-                                  route_from=route_from, mention_text=mention_text, meal=meal)
+                                  route_from=route_from, mention_text=mention_text, meal=meal, musts=musts)
     if not final:
         raise PlacesUnavailable("empty")
     return final, "osm"
@@ -927,7 +933,7 @@ def get_candidates(
 def _finalize_candidates(
     lat: float, lng: float, results: list[dict], radius_km: float, params: dict,
     prefer_cuisine: str | None = None, route_from: dict | None = None,
-    mention_text: str | None = None, meal: str | None = None,
+    mention_text: str | None = None, meal: str | None = None, musts: list[str] | None = None,
 ) -> list[dict]:
     """distance_km is only ever the cheap prefilter - a road route is never
     shorter than the straight line, so it's a safe upper bound, but it can
@@ -967,17 +973,25 @@ def _finalize_candidates(
     meal (see meals.filter_for_meal) narrows what's left to places that suit
     it BEFORE the pool is picked, so the 8 slots aren't spent on an ice-cream
     shop at lunch. Named places are taken out first and so are exempt: if a
-    partner asked for Baskin-Robbins by name they get it, whatever the hour."""
+    partner asked for Baskin-Robbins by name they get it, whatever the hour.
+
+    musts (see musts.filter_for_musts) then drops places that can't serve a
+    demanded food and gives the ones that clearly do first claim on the
+    shortlist slots - also turning off ring sampling, like a stated cuisine."""
     dishes = detect_dish_keywords(mention_text) if mention_text else []
     pinned = find_named_places(mention_text, results)[: params["max_candidates"]] if mention_text else []
     pinned_ids = {c["id"] for c in pinned}
     rest = [c for c in results if c["id"] not in pinned_ids]
     if meal:
         rest, _ = filter_for_meal(rest, meal)
-    stratify = params["stratify"] and not (prefer_cuisine or dishes)
+    priority_ids: set[str] | None = None
+    if musts:
+        rest = filter_for_musts(rest, musts)
+        priority_ids = {c["id"] for c in rest if has_sign(c, musts)} or None
+    stratify = params["stratify"] and not (prefer_cuisine or dishes or priority_ids)
     pool_room = max(ROUTE_POOL_SIZE - len(pinned), 1)
     pool = pinned + _select_diverse(
-        rest, pool_room, stratify=stratify, prefer_cuisine=prefer_cuisine, dishes=dishes
+        rest, pool_room, stratify=stratify, prefer_cuisine=prefer_cuisine, dishes=dishes, priority_ids=priority_ids
     )
 
     origin = (route_from["lat"], route_from["lng"]) if route_from else (lat, lng)
@@ -998,7 +1012,7 @@ def _finalize_candidates(
     others = [c for c in eligible if c["id"] not in pinned_ids]
     return kept_pinned + _select_diverse(
         others, max(params["max_candidates"] - len(kept_pinned), 0),
-        stratify=stratify, prefer_cuisine=prefer_cuisine, dishes=dishes,
+        stratify=stratify, prefer_cuisine=prefer_cuisine, dishes=dishes, priority_ids=priority_ids,
     )
 
 
@@ -1022,7 +1036,7 @@ def _pick_diverse(bucket: list[dict], count: int) -> list[dict]:
 
 def _select_diverse(
     results: list[dict], max_candidates: int, stratify: bool = False, prefer_cuisine: str | None = None,
-    dishes: list[str] | None = None,
+    dishes: list[str] | None = None, priority_ids: set[str] | None = None,
 ) -> list[dict]:
     """Nearest first, preferring a cuisine we haven't picked yet. For the
     Road Trip tier (`stratify=True`), pick across near/mid/far distance
@@ -1035,9 +1049,27 @@ def _select_diverse(
     8 diversity picks just because it wasn't the closest. Among the
     preferred, a place whose NAME carries one of `dishes` ("Nusantara
     Briyani House" for "biryani") comes ahead of a merely-nearer one with
-    only the right cuisine label; otherwise nearest first."""
+    only the right cuisine label; otherwise nearest first.
+
+    priority_ids are places that clearly serve something a partner demanded
+    ("must have chicken"): they get first claim on up to three quarters of the
+    slots, nearest first, before anything else is considered."""
     if max_candidates <= 0:
         return []
+    if priority_ids:
+        first = sorted(
+            (r for r in results if r["id"] in priority_ids),
+            key=lambda r: (-_dish_affinity(r, dishes) if dishes else 0, effective_km(r)),
+        )[: max(1, round(max_candidates * 0.75))]
+        if first:
+            taken = {r["id"] for r in first}
+            rest = [r for r in results if r["id"] not in taken]
+            room = max_candidates - len(first)
+            filler = (
+                _select_diverse(rest, room, stratify=stratify, prefer_cuisine=prefer_cuisine, dishes=dishes)
+                if room > 0 else []
+            )
+            return first + filler
     if prefer_cuisine:
         needle = prefer_cuisine.lower()
         preferred = [r for r in results if needle in r["cuisine"].lower()]

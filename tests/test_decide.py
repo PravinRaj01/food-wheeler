@@ -889,3 +889,40 @@ def test_the_meal_is_echoed_even_for_a_single_surviving_place(client, fake_manag
     with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "osm")):
         data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, local_hour=19).get_json()
     assert data["meal"] == {"id": "dinner", "source": "clock"}
+
+
+# --- Must-haves (see musts.py) --------------------------------------------------
+
+def test_a_demanded_food_reaches_the_shortlist_as_a_rule_and_is_echoed(client, fake_manager):
+    _scored(fake_manager)
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        resp = _post(client, partner1={"text": "must have chicken"}, partner2={"text": "spicy"})
+    assert mock_get.call_args.kwargs["musts"] == ["chicken"]
+    data = resp.get_json()
+    assert data["musts"] == ["chicken"]
+    # None of FIXED_CANDS clearly serves chicken, so the round says so.
+    assert data["relaxed"] == ["chicken"]
+
+
+def test_a_demand_a_shortlisted_place_clearly_meets_is_not_reported_as_unmet(client, fake_manager):
+    _scored(fake_manager)
+    ayam = {**FIXED_CANDS[0], "name": "Ayam Penyet Ali", "cuisine": "Indonesian"}
+    with patch("app.get_candidates", return_value=([ayam, *FIXED_CANDS[1:]], "osm")):
+        data = _post(client, partner1={"text": "must have chicken"}, partner2={"text": "spicy"}).get_json()
+    assert data["musts"] == ["chicken"]
+    assert data["relaxed"] == []
+
+
+def test_plain_mentions_are_not_demands(client, fake_manager):
+    _scored(fake_manager)
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        data = _post(client, partner1={"text": "chicken biryani"}, partner2={"text": "spicy"}).get_json()
+    assert mock_get.call_args.kwargs["musts"] == []
+    assert data["musts"] == [] and data["relaxed"] == []
+
+
+def test_musts_and_relaxed_are_present_for_a_single_surviving_place_too(client, fake_manager):
+    with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "osm")):
+        data = _post(client, partner1={"text": "must have chicken"}, partner2={"text": "x"}).get_json()
+    assert data["musts"] == ["chicken"]
+    assert data["relaxed"] == ["chicken"]

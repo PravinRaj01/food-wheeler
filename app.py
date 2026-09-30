@@ -33,6 +33,7 @@ import requests
 from flask import Flask, jsonify, request
 
 from meals import MEALS, detect_meal
+from musts import detect_musts, unmet_musts
 from candidates import (
     CUISINE_NEEDLES, DEFAULT_RADIUS_KM, PRICE_TIER_MAX, LocationRequired, PlacesUnavailable,
     clamp_radius_km, detect_country, detect_cuisine_preference, effective_km, get_candidates, haversine_km,
@@ -816,6 +817,9 @@ def decide():
     # back so the UI can say what was assumed.
     meal, meal_source = detect_meal(combined_text, local_hour, meal_choice)
     meal_info = {"id": meal, "source": meal_source}
+    # Foods a partner DEMANDED ("must have chicken") - a hard rule on the
+    # shortlist, not just text for the model. See musts.py.
+    musts = detect_musts(combined_text)
     country = _country_for_response(location, same_country)
 
     # A trusted candidates_in round already searched around whatever
@@ -870,12 +874,15 @@ def decide():
             route_from = location if search_center else None
             cands, source = get_candidates(fetch_location, radius_km=radius_km, same_country=same_country,
                                             prefer_cuisine=prefer_cuisine, route_from=route_from,
-                                            mention_text=combined_text, meal=meal)
+                                            mention_text=combined_text, meal=meal, musts=musts)
         except PlacesUnavailable as exc:
             return _places_unavailable_response(exc, radius_km)
         except LocationRequired:
             return _location_required_response()
     cands = with_colors(cands)
+    # Demanded foods no shortlisted place clearly serves - reported so the
+    # list can say so instead of quietly ignoring the demand.
+    unmet = unmet_musts(cands, musts)
 
     filtered, exclusions = apply_guards(combined_text, cands)
     asked_dims = {tb["question_id"] for tb in tiebreakers if tb.get("question_id")}
@@ -892,6 +899,8 @@ def decide():
         payload["country"] = country
         payload["search_center"] = search_center
         payload["meal"] = meal_info
+        payload["musts"] = musts
+        payload["relaxed"] = unmet
         if dev_mode:
             # Normally this path skips scoring entirely - the outcome is
             # forced regardless of what any engine says. Dev Mode is the one
@@ -941,6 +950,8 @@ def decide():
     payload["country"] = country
     payload["search_center"] = search_center
     payload["meal"] = meal_info
+    payload["musts"] = musts
+    payload["relaxed"] = unmet
 
     if dev_mode:
         # The reference "winner" for the engine comparison is simply the
