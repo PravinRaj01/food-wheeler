@@ -10,18 +10,18 @@ import { StandaloneRedirect } from "@/components/standalone-redirect";
 const HOW_IT_WORKS = [
   {
     n: "01",
-    title: "You each tell me what you want",
+    title: "You each say what you want",
     body: "Type it or say it out loud, one after the other, on the same phone. Neither of you sees the other's answer first.",
   },
   {
     n: "02",
-    title: "I weigh you both",
-    body: "If it's close, I ask ONE quick question you answer together instead of guessing.",
+    title: "I rank what fits you both",
+    body: "Your top five, best first, kept to the right kind of place for the meal and honouring anything you must have. Too close to call? I can settle it with one question.",
   },
   {
     n: "03",
-    title: "I spin, and dinner's decided",
-    body: "The wheel lands on tonight's table, with a map pin and how sure I was.",
+    title: "You pick, or we spin",
+    body: "Tap one to go there, or let the wheel choose: better matches get bigger slices. Either way you get a map pin and directions.",
   },
 ];
 
@@ -36,7 +36,7 @@ const WHY_COUPLES_USE_IT = [
   },
   {
     title: "The polite veto loop.",
-    body: `"Not that." "Not that either." I break the loop with one actual answer, not another suggestion to shoot down.`,
+    body: `"Not that." "Not that either." I break the loop with a ranked list, not another suggestion to shoot down.`,
   },
 ];
 
@@ -48,62 +48,66 @@ const ENGINES = [
 
 export default function LandingPage() {
   return (
-    <div className="min-h-dvh text-cream">
+    <div className="min-h-dvh overflow-x-clip text-cream">
       <StandaloneRedirect />
 
-      {/* Header */}
-      <header className="safe-top mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
+      {/* Header - one row at every width: the name can't wrap and the button
+          is short, so a 360px phone never squeezes either. */}
+      <header className="safe-top mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-5 md:px-6 md:py-6">
         <div className="flex items-center gap-2">
-          <Logo className="h-7 w-7" />
-          <span className="font-display text-lg font-semibold tracking-tight">Food Wheeler</span>
+          <Logo className="h-7 w-7 shrink-0" />
+          <span className="font-display text-lg font-semibold tracking-tight whitespace-nowrap">Food Wheeler</span>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <InstallButton className="hidden text-sm text-cream/60 underline underline-offset-4 hover:text-cream sm:inline" />
           <Link
             href="/decide"
-            className="rounded-full bg-ember px-5 py-2 text-sm font-semibold text-ink transition-opacity hover:opacity-90"
+            className="rounded-full bg-ember px-4 py-2 text-sm font-semibold whitespace-nowrap text-ink transition-opacity hover:opacity-90 md:px-5"
           >
-            Let your third wheel pick
+            Start deciding
           </Link>
         </div>
       </header>
 
-      {/* Hero */}
-      <section className="mx-auto grid max-w-6xl items-center gap-10 px-6 pt-10 pb-24 md:grid-cols-2 md:pt-20">
-        <div>
-          <p className="nav-dot text-sm font-medium tracking-wide text-cream/60">Your third wheel for dinner</p>
-
-          <h1 className="font-display mt-6 max-w-xl text-5xl leading-[1.02] font-semibold tracking-tight md:text-6xl">
-            Two of you. <span className="text-peach">One third wheel.</span> Dinner, decided.
-          </h1>
-
-          <p className="mt-6 max-w-md text-base text-cream/70">
-            You each say what you want. I weigh it, ask one question if you&apos;re
-            too close, and spin. No group chat, no twenty-minute scroll, no
-            accounts required to try it.
+      {/* Hero - a big two-line headline, with the logo mark beside the eyebrow.
+          On a phone the mark shares the eyebrow's row, so the headline always
+          starts below whichever is taller and can't run under it; from md up
+          it goes back to being a big mark in the corner. The headline is sized
+          from the viewport so "Two appetites." fits on one line on any phone. */}
+      <section className="relative mx-auto max-w-6xl px-5 pt-4 pb-16 md:px-6 md:pt-20 md:pb-28">
+        <div className="flex items-center justify-between gap-4 md:block">
+          <p className="nav-dot text-sm font-medium tracking-wide whitespace-nowrap text-cream/60">
+            Two partners, one phone
           </p>
-
-          <div className="mt-8 flex flex-wrap items-center gap-4">
-            <Link
-              href="/decide"
-              className="group inline-flex items-center gap-2 rounded-full bg-ember px-6 py-3 text-sm font-semibold text-ink transition-opacity hover:opacity-90"
-            >
-              Let your third wheel pick
-              <ArrowUpRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
-            </Link>
-            <InstallButton className="text-sm text-cream/60 underline underline-offset-4 hover:text-cream" />
+          <div className="pointer-events-none shrink-0 md:absolute md:top-6 md:right-6">
+            <Logo className="logo-spin h-[88px] w-[88px] opacity-90 md:h-72 md:w-72" />
           </div>
         </div>
 
-        {/* Back to the slowly spinning logo mark - the live idling wheel
-            demo tried here didn't land as well as this simpler mark. */}
-        <div className="pointer-events-none mx-auto w-full max-w-[280px] opacity-90 md:max-w-[360px]">
-          <Logo className="h-full w-full" style={{ animation: "spin 40s linear infinite" }} />
+        <h1 className="font-display mt-5 text-[length:min(13vw,3.75rem)] leading-[0.95] font-semibold tracking-tight md:mt-6 md:max-w-2xl md:text-8xl">
+          <span className="block text-peach">Two appetites.</span>
+          <span className="block text-cream">One table.</span>
+        </h1>
+
+        <p className="mt-6 max-w-md text-base text-cream/70">
+          Say what you each want, type it or say it out loud. I rank the places that fit you both, then you pick one
+          or let the wheel choose. No group chat, no twenty-minute scroll, no account needed to try it.
+        </p>
+
+        <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-3">
+          <Link
+            href="/decide"
+            className="group inline-flex items-center gap-2 rounded-full bg-ember px-6 py-3 text-sm font-semibold text-ink transition-opacity hover:opacity-90"
+          >
+            Start deciding
+            <ArrowUpRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+          </Link>
+          <InstallButton className="text-sm text-cream/60 underline underline-offset-4 hover:text-cream" />
         </div>
       </section>
 
       {/* How your third wheel works */}
-      <section className="hairline mx-auto max-w-6xl px-6 py-16">
+      <section className="hairline mx-auto max-w-6xl px-5 py-14 md:px-6 md:py-16">
         <p className="nav-dot text-sm font-medium tracking-wide text-cream/60">How your third wheel works</p>
         <div className="mt-8 grid gap-10 md:grid-cols-3">
           {HOW_IT_WORKS.map((s) => (
@@ -117,7 +121,7 @@ export default function LandingPage() {
       </section>
 
       {/* Why couples use it */}
-      <section className="hairline mx-auto max-w-6xl px-6 py-16">
+      <section className="hairline mx-auto max-w-6xl px-5 py-14 md:px-6 md:py-16">
         <p className="nav-dot text-sm font-medium tracking-wide text-cream/60">Why couples use it</p>
         <div className="mt-8 grid gap-4 md:grid-cols-3">
           {WHY_COUPLES_USE_IT.map((s) => (
@@ -131,7 +135,7 @@ export default function LandingPage() {
 
       {/* Footer, with the engines demoted to a small technical footnote -
           most couples never need to know this exists. */}
-      <footer className="hairline mx-auto max-w-6xl px-6 py-8">
+      <footer className="hairline mx-auto max-w-6xl px-5 py-8 md:px-6">
         <details className="mb-8 text-xs text-cream/50">
           <summary className="nav-dot cursor-pointer font-medium tracking-wide text-cream/60">Under the hood</summary>
           <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -145,8 +149,8 @@ export default function LandingPage() {
             ))}
           </div>
           <p className="mt-3 max-w-xl text-cream/40">
-            Every engine returns a plain probability, so the confidence rule and the mediator question behave the same
-            no matter which one is selected.
+            Every engine returns a plain probability, so the ranking and the optional one-question tiebreaker behave the
+            same no matter which one is selected.
           </p>
         </details>
 
@@ -168,6 +172,8 @@ export default function LandingPage() {
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
+        .logo-spin { animation: spin 40s linear infinite; }
+        @media (prefers-reduced-motion: reduce) { .logo-spin { animation: none; } }
       `}</style>
     </div>
   );
