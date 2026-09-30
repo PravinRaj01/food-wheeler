@@ -118,18 +118,21 @@ export interface DecideRequest {
   cross_border: boolean;
 }
 
-export interface MatchResponse {
-  status: "match";
-  reason: "confident" | "fair_spin" | "only_option";
-  confidence: number;
-  source: "overture" | "osm" | "mock";
-  winner: Candidate;
+/** The engine's full opinion of every shortlisted place, best first - the
+ * couple picks from it (or spins, weighted by these same scores). Nothing is
+ * pre-decided for them; see app.py's build_ranked_payload. */
+export interface RankedResponse {
+  status: "ranked";
   ranking: RankingRow[];
+  /** Offered, never forced: present only when the top two are close AND a
+   * dimension actually separates them AND rounds remain. */
+  question: MediatorQuestion | null;
+  rounds_left: number;
+  source: "overture" | "osm" | "mock";
   candidates: Candidate[];
   round: number;
   latency_ms: number;
   engine: EngineMeta;
-  wheel_ids?: string[];
   comparison?: Record<string, ComparisonEntry>;
   /** ISO3166-1 alpha-2 country the search was scoped to, or null if it
    * couldn't be determined (or cross-border was on) - see
@@ -139,12 +142,12 @@ export interface MatchResponse {
   search_center?: SearchCenter | null;
 }
 
+/** The one forced question left: the partners named two different places to
+ * search around (see app.py's build_location_question), asked before
+ * anything is fetched - so contenders/candidates are empty. */
 export interface TiebreakerResponse {
   status: "tiebreaker";
-  // "location_conflict": the partners named two different places to search
-  // around - see app.py's build_location_question. contenders/candidates
-  // are empty in that case, since nothing's been fetched yet.
-  reason: "low_confidence" | "exact_tie" | "location_conflict";
+  reason: "location_conflict";
   confidence: number;
   round: number;
   rounds_left: number;
@@ -153,7 +156,6 @@ export interface TiebreakerResponse {
   candidates: Candidate[];
   source: "overture" | "osm" | "mock" | "n/a";
   engine: EngineMeta;
-  comparison?: Record<string, ComparisonEntry>;
   country?: string | null;
   search_center?: SearchCenter | null;
 }
@@ -165,7 +167,19 @@ export interface ErrorResponse {
   engine_id?: string;
 }
 
-export type DecideResponse = MatchResponse | TiebreakerResponse | ErrorResponse;
+export type DecideResponse = RankedResponse | TiebreakerResponse | ErrorResponse;
+
+/** What the couple ended up with, and how - built client-side from a
+ * RankedResponse when they tap "Let's go here" or the wheel lands. */
+export interface Choice {
+  candidate: Candidate;
+  probability: number;
+  /** 1-based position in the ranked list. */
+  rank: number;
+  /** How many places were ranked. */
+  total: number;
+  via: "picked" | "spun";
+}
 
 export interface EngineListItem {
   id: EngineId;

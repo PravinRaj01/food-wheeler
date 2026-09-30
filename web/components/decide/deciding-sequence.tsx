@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { MapPin, Soup, MessageSquareText, Scale, Sparkles } from "lucide-react";
-import type { MatchResponse, RankingRow, TiebreakerResponse } from "@/lib/decide/types";
+import type { RankedResponse, RankingRow, TiebreakerResponse } from "@/lib/decide/types";
+import { SHORTLIST_SIZE } from "@/lib/decide/weighted";
 import { decidingIntro } from "@/lib/copy";
 
 /** What decide/page.tsx's submit() hands this component once the server has
@@ -12,7 +13,7 @@ import { decidingIntro } from "@/lib/copy";
  * mediator screen never appears before the couple has seen "considering
  * options, then landing on one" play out. */
 export type PendingDecideResult =
-  | { kind: "match"; response: MatchResponse }
+  | { kind: "ranked"; response: RankedResponse }
   | { kind: "tiebreaker"; response: TiebreakerResponse };
 
 type Phase = "branch" | "fill" | "converge" | "final";
@@ -66,16 +67,16 @@ function truncate(s: string, n: number) {
 }
 
 function topCandidatesFrom(pending: PendingDecideResult): RankingRow[] {
-  return pending.kind === "match" ? pending.response.ranking.slice(0, 3) : pending.response.contenders.slice(0, 3);
+  return pending.kind === "ranked" ? pending.response.ranking.slice(0, 3) : [];
 }
 
-/** The final card's text - deliberately never spoils the wheel by naming a
- * winner (except only_option, where there IS no wheel - just one place left
- * standing after the guards ran). */
-function finalTextFrom(pending: PendingDecideResult, count: number): string {
-  if (pending.kind === "tiebreaker") return "Too close — one question";
-  if (pending.response.reason === "only_option") return pending.response.winner.name;
-  return `${count} finalist${count === 1 ? "" : "s"} — spinning`;
+/** The final card's text. The count is exactly how many rows the results
+ * list will show (an earlier version said "3 finalists" while the wheel drew
+ * 2), and it never names #1 - the list does that a moment later. */
+function finalTextFrom(pending: PendingDecideResult): string {
+  if (pending.kind === "tiebreaker") return "Two places mentioned — one question";
+  const n = Math.min(SHORTLIST_SIZE, pending.response.ranking.length);
+  return n === 1 ? pending.response.ranking[0].name : `Your top ${n} are ready`;
 }
 
 export function DecidingSequence({
@@ -167,7 +168,7 @@ export function DecidingSequence({
       <div role="status" aria-live="polite" className="flex flex-col items-center gap-2 py-14 text-center">
         <p className="text-sm text-cream/70">
           {pendingResult
-            ? finalTextFrom(pendingResult, topCandidatesFrom(pendingResult).length)
+            ? finalTextFrom(pendingResult)
             : "Your third wheel is thinking…"}
         </p>
       </div>
@@ -283,7 +284,7 @@ export function DecidingSequence({
                         style={{ backgroundColor: c.color }}
                       />
                       <p className="truncate text-[11px] font-medium text-cream">{c.name}</p>
-                      <p className="text-[10px] text-cream/50">{Math.round(c.probability * 100)}%</p>
+                      <p className="text-[10px] text-cream/50">#{i + 1}</p>
                     </>
                   ) : (
                     <>
@@ -298,8 +299,7 @@ export function DecidingSequence({
         </AnimatePresence>
       </div>
 
-      {/* Final card - never spoils the wheel (except only_option, where
-          there's no wheel to spoil). */}
+      {/* Final card - how many places the list will show, not who's on top. */}
       <AnimatePresence>
         {showFinal && pendingResult && (
           <motion.div
@@ -308,7 +308,7 @@ export function DecidingSequence({
             transition={{ duration: 0.4 }}
             className="glass w-full max-w-[240px] rounded-xl px-4 py-3"
           >
-            <p className="text-sm font-medium text-cream">{finalTextFrom(pendingResult, candidates.length)}</p>
+            <p className="text-sm font-medium text-cream">{finalTextFrom(pendingResult)}</p>
           </motion.div>
         )}
       </AnimatePresence>

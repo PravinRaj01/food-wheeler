@@ -19,8 +19,7 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
-import type { RankingRow, TiebreakerResponse } from "@/lib/decide/types";
-import { DevComparison } from "@/components/decide/dev-comparison";
+import type { MediatorQuestion, RankingRow } from "@/lib/decide/types";
 
 // No emoji from the backend any more (see app.py's DIMENSION_VALUES) - each
 // (dimension id, answer) pair maps to its own lucide icon here instead. A
@@ -43,18 +42,30 @@ function optionIcon(dimensionId: string, answer: string): LucideIcon {
   return OPTION_ICONS[dimensionId]?.[answer] ?? Utensils;
 }
 
+/** One joint question, answered together. Two kinds share this panel:
+ * - "close": OPTIONAL, raised from the results list when the top two are
+ *   close and a dimension separates them - "Back to the list" is the way out.
+ * - "location": FORCED, the partners named two different places to search
+ *   around (nothing has been fetched yet, so there's no list to go back to) -
+ *   "Just pick one" defaults to the first mention instead of asking again. */
 export function MediatorPanel({
-  response,
+  question,
+  kind,
+  round,
+  engineLabel,
+  contenders = [],
   onAnswer,
-  onSpinAnyway,
-  devMode,
+  onSecondary,
 }: {
-  response: TiebreakerResponse;
+  question: MediatorQuestion;
+  kind: "close" | "location";
+  round: number;
+  engineLabel: string;
+  contenders?: RankingRow[];
   onAnswer: (answer: { question_id: string; answer: string; text: string }) => void;
-  onSpinAnyway: () => void;
-  devMode: boolean;
+  onSecondary: () => void;
 }) {
-  const maxP = Math.max(...response.contenders.map((c) => c.probability), 0.0001);
+  const maxP = Math.max(...contenders.map((c) => c.probability), 0.0001);
 
   return (
     <motion.div
@@ -63,27 +74,27 @@ export function MediatorPanel({
       transition={{ type: "spring", bounce: 0.35, duration: 0.6 }}
       className="glass rounded-2xl p-6 text-center"
     >
-      <p className="mb-2 text-[11px] tracking-wide text-cream/40">via {response.engine.label}</p>
+      <p className="mb-2 text-[11px] tracking-wide text-cream/40">via {engineLabel}</p>
       <div role="status" aria-live="polite">
-        <h2 className="font-display mb-5 text-xl text-cream">{response.question.prompt}</h2>
+        <h2 className="font-display mb-5 text-xl text-cream">{question.prompt}</h2>
       </div>
 
-      <div className="mb-6 space-y-3 text-left">
-        {response.contenders.map((c) => (
-          <ContenderBar key={c.id} row={c} maxP={maxP} />
-        ))}
-      </div>
-
-      {devMode && response.comparison && <DevComparison comparison={response.comparison} />}
+      {contenders.length > 0 && (
+        <div className="mb-6 space-y-3 text-left">
+          {contenders.map((c) => (
+            <ContenderBar key={c.id} row={c} maxP={maxP} />
+          ))}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
-        {response.question.options.map((opt) => {
-          const Icon = optionIcon(response.question.id, opt.answer);
+        {question.options.map((opt) => {
+          const Icon = optionIcon(question.id, opt.answer);
           return (
             <button
               key={opt.answer}
               type="button"
-              onClick={() => onAnswer({ question_id: response.question.id, answer: opt.answer, text: opt.text })}
+              onClick={() => onAnswer({ question_id: question.id, answer: opt.answer, text: opt.text })}
               className="hairline-b flex h-20 flex-col items-center justify-center gap-1.5 rounded-xl border border-line text-sm font-medium text-cream transition-colors hover:bg-glass"
             >
               <Icon className="h-4 w-4 text-ember" />
@@ -94,9 +105,9 @@ export function MediatorPanel({
       </div>
 
       <p className="mt-5 text-xs text-cream/40">
-        Round {response.round + 1} of 2 ·{" "}
-        <button type="button" onClick={onSpinAnyway} className="text-cream/60 underline">
-          Spin anyway
+        Round {round + 1} of 2 ·{" "}
+        <button type="button" onClick={onSecondary} className="text-cream/60 underline">
+          {kind === "close" ? "Back to the list" : "Just pick one"}
         </button>
       </p>
     </motion.div>

@@ -25,9 +25,11 @@ import { NamesStep } from "@/components/decide/names-step";
 import { DecidingSequence } from "@/components/decide/deciding-sequence";
 import type { PendingDecideResult } from "@/components/decide/deciding-sequence";
 import { LocationPrompt } from "@/components/decide/location-prompt";
-import { Wheel, slicesFromRanking } from "@/components/decide/wheel";
+import { Wheel } from "@/components/decide/wheel";
+import { ResultsList } from "@/components/decide/results-list";
 import { MediatorPanel } from "@/components/decide/mediator-panel";
 import { RevealPanel } from "@/components/decide/reveal-panel";
+import { pickWeighted, topWeights } from "@/lib/decide/weighted";
 
 const SEED_KEY = "fw_seeded_candidates";
 const NAMES_KEY = "fw_names";
@@ -69,33 +71,34 @@ export default function DecidePage() {
 
   // Save every reveal to the local-first outbox (see lib/sync/outbox.ts) -
   // guests get it too (ownerId: null), claimed automatically on their next
-  // login. Guarded by clientId so a re-render on the reveal screen (e.g.
-  // toggling Dev Mode) can't enqueue the same decision twice.
+  // login. Guarded by a key so a re-render on the reveal screen can't
+  // enqueue the same decision twice; picking a DIFFERENT place after going
+  // back to the list is a genuinely new decision and gets its own entry.
   const savedClientIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (state.phase !== "reveal" || !state.lastMatch) return;
-    const clientId = `${state.lastMatch.winner.id}-${state.lastMatch.round}-${state.lastMatch.latency_ms}`;
+    if (state.phase !== "reveal" || !state.chosen || !state.lastRanked) return;
+    const { chosen, lastRanked: m } = state;
+    const clientId = `${chosen.candidate.id}-${chosen.via}-${m.round}-${m.latency_ms}`;
     if (savedClientIdRef.current === clientId) return;
     savedClientIdRef.current = clientId;
 
-    const m = state.lastMatch;
     enqueueDecision(userId, {
       clientId: crypto.randomUUID(),
       partner1Text: state.p1Text.trim(),
       partner2Text: state.p2Text.trim(),
       engine: m.engine.id,
-      confidence: m.confidence,
-      reason: m.reason,
+      confidence: chosen.probability,
+      reason: chosen.via,
       radiusKm: state.radiusKm,
       source: m.source,
-      winner: m.winner,
-      runnerUps: m.ranking.filter((r) => r.id !== m.winner.id).slice(0, 5),
+      winner: chosen.candidate,
+      runnerUps: m.ranking.filter((r) => r.id !== chosen.candidate.id).slice(0, 5),
       tiebreakers: state.tiebreakers,
     }).catch(() => {
       /* the outbox write itself failing (e.g. IndexedDB unavailable) just
          means this one decision won't be in History - never block the UI */
     });
-  }, [state.phase, state.lastMatch, state.p1Text, state.p2Text, state.radiusKm, state.tiebreakers, userId]);
+  }, [state, userId]);
 
   // Restore stored preferences post-mount only, so server and the first
   // client render match (see lib/safe-storage.ts) and there's no hydration
@@ -295,7 +298,7 @@ export default function DecidePage() {
         // dispatch once it's finished playing. An error skips all of that
         // and dispatches immediately, per the plan: nothing to animate
         // toward when there's nothing to show.
-        if (res.status === "match") setPendingResult({ kind: "match", response: res });
+        if (res.status === "ranked") setPendingResult({ kind: "ranked", response: res });
         else if (res.status === "tiebreaker") setPendingResult({ kind: "tiebreaker", response: res });
         else {
           setPendingResult(null);
@@ -350,7 +353,7 @@ export default function DecidePage() {
   const handleDecidingDone = useCallback(() => {
     setPendingResult((current) => {
       if (!current) return current;
-      if (current.kind === "match") dispatch({ type: "SUBMIT_MATCH", response: current.response });
+      if (current.kind === "ranked") dispatch({ type: "SUBMIT_RANKED", response: current.response });
       else dispatch({ type: "SUBMIT_TIEBREAKER", response: current.response });
       return null;
     });
@@ -476,45 +479,73 @@ export default function DecidePage() {
           />
         )}
 
-        {state.phase === "wheel" && state.lastMatch && (
+        {state.phase === "results" && state.lastRanked && (
+          <div key="results">
+            <ResultsList
+              response={state.lastRanked}
+              p1Name={state.p1Name}
+              p2Name={state.p2Name}
+              devMode={state.devMode}
+              onPick={(id) => dispatch({ type: "PICK", id })}
+              onSpin={() => {
+                // Drawn ONCE, here, before the wheel mounts - the wheel only
+                // animates to it, so the slice sizes it shows are the real odds.
+                const slices = topWeights(state.lastRanked!.ranking);
+                dispatch({ type: "START_SPIN", winnerId: pickWeighted(slices) });
+              }}
+              onOpenQuestion={() => dispatch({ type: "OPEN_QUESTION" })}
+            />
+          </div>
+        )}
+
+        {state.phase === "wheel" && state.lastRanked && state.spinWinnerId && (
           <div key="wheel" className="py-8">
             <Wheel
-              slices={slicesFromRanking(state.lastMatch.ranking, state.lastMatch.wheel_ids)}
-              winnerId={state.lastMatch.winner.id}
-              fair={state.lastMatch.reason === "fair_spin"}
-              engineLabel={state.lastMatch.engine.label}
+              slices={topWeights(state.lastRanked.ranking)}
+              winnerId={state.spinWinnerId}
+              engineLabel={state.lastRanked.engine.label}
               onLanded={() => dispatch({ type: "WHEEL_LANDED" })}
             />
           </div>
         )}
 
-        {state.phase === "mediator" && state.lastTiebreaker && (
+        {state.phase === "mediator" && state.mediator && (
           <MediatorPanel
             key="mediator"
-            response={state.lastTiebreaker}
-            devMode={state.devMode}
+            question={state.mediator.question}
+            kind={state.mediator.kind}
+            round={state.mediator.round}
+            engineLabel={state.mediator.engineLabel}
+            contenders={state.mediator.kind === "close" ? state.lastRanked?.ranking.slice(0, 2) : undefined}
             onAnswer={(tb) => {
-              const round = state.lastTiebreaker!.round + 1;
+              const round = state.mediator!.round + 1;
               dispatch({ type: "ANSWER_MEDIATOR", tiebreaker: tb });
               submit({ tiebreakers: [...state.tiebreakers, tb], round });
             }}
-            onSpinAnyway={() => {
-              dispatch({ type: "SPIN_ANYWAY" });
-              submit({ round: 2 });
+            onSecondary={() => {
+              if (state.mediator!.kind === "close") {
+                dispatch({ type: "BACK_TO_RESULTS" });
+              } else {
+                // Skipping the location question: round 2 makes the server
+                // default to the first partner's mention instead of asking again.
+                dispatch({ type: "SPIN_ANYWAY" });
+                submit({ round: 2 });
+              }
             }}
           />
         )}
 
-        {state.phase === "reveal" && state.lastMatch && (
+        {state.phase === "reveal" && state.chosen && state.lastRanked && (
           <RevealPanel
             key="reveal"
-            response={state.lastMatch}
+            choice={state.chosen}
+            response={state.lastRanked}
             p1Name={state.p1Name}
             p2Name={state.p2Name}
             p1Text={state.p1Text}
             p2Text={state.p2Text}
             userLocation={loc.location}
-            devMode={state.devMode}
+            onBackToList={() => dispatch({ type: "BACK_TO_RESULTS" })}
             onStartOver={resetGame}
           />
         )}

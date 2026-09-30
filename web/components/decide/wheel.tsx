@@ -1,15 +1,33 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { RankingRow } from "@/lib/decide/types";
+import type { WeightedSlice } from "@/lib/decide/weighted";
 import { playTick } from "@/lib/sound";
 
 interface WheelProps {
-  slices: { id: string; name: string; color: string }[];
+  /** Sized by `weight` (a share of the wheel, summing to 1) - a better
+   * match gets a bigger slice. */
+  slices: WeightedSlice[];
+  /** Drawn by the caller BEFORE the spin (see weighted.pickWeighted), so the
+   * slice sizes shown ARE the odds - the wheel only animates to it. */
   winnerId: string;
-  fair: boolean;
   engineLabel?: string;
   onLanded: () => void;
+}
+
+const TWO_PI = 2 * Math.PI;
+
+/** Each slice's [start, end) angle, laid out end to end by weight - the one
+ * place that turns shares into geometry, shared by drawing, landing and
+ * hit-testing so they can never disagree about where a slice is. */
+export function sliceSpans(weights: number[]): { start: number; end: number }[] {
+  const total = weights.reduce((a, b) => a + b, 0) || 1;
+  let acc = 0;
+  return weights.map((w) => {
+    const start = acc;
+    acc += (w / total) * TWO_PI;
+    return { start, end: acc };
+  });
 }
 
 // Phase 3 kinetic feel, replacing v1's plain easeOutCubic:
@@ -138,8 +156,7 @@ function drawWheel(
   const cy = size / 2;
   const r = size / 2 - 8;
   ctx.clearRect(0, 0, size, size);
-  const n = slices.length;
-  const sliceAngle = (2 * Math.PI) / n;
+  const spans = sliceSpans(slices.map((s) => s.weight));
 
   // Soft drop shadow under the whole wheel, cast by one plain disc drawn
   // before the slices (a shadow per slice would be both slower and, with
@@ -158,8 +175,7 @@ function drawWheel(
   ctx.translate(cx, cy);
   ctx.rotate(rotation);
   slices.forEach((s, i) => {
-    const start = i * sliceAngle;
-    const end = start + sliceAngle;
+    const { start, end } = spans[i];
     const fill = sliceColor(i);
     ctx.beginPath();
     ctx.moveTo(0, 0);
@@ -172,7 +188,7 @@ function drawWheel(
     ctx.stroke();
 
     ctx.save();
-    ctx.rotate(start + sliceAngle / 2);
+    ctx.rotate((start + end) / 2);
     ctx.textAlign = "right";
     ctx.fillStyle = labelColorFor(fill);
     ctx.font = `600 20px ${fontFamily}`;
@@ -183,10 +199,10 @@ function drawWheel(
 
   // Fine gold tick marks at every slice boundary, rotating with the wheel -
   // part of the bezel, not the slices, but easiest to draw in this same
-  // rotated frame since the boundaries are already at i*sliceAngle here.
-  for (let i = 0; i < n; i++) {
+  // rotated frame since the boundaries are already at each span's start here.
+  for (const { start } of spans) {
     ctx.save();
-    ctx.rotate(i * sliceAngle);
+    ctx.rotate(start);
     ctx.beginPath();
     ctx.moveTo(r - 7, 0);
     ctx.lineTo(r + 7, 0);
@@ -200,14 +216,14 @@ function drawWheel(
   // The win moment's slice glow - drawn in WORLD space (not the rotated
   // frame above, which we've already exited) since by the time this ever
   // has a non-null winMoment, the wheel has settled and the winning
-  // slice's world-space angular span is just its own i*sliceAngle offset
+  // slice's world-space angular span is just its own span offset
   // plus the settled rotation - no need to track screen position any other
   // way. The needle always lands pointing at the winner by construction
   // (see computeLandingRotation), so this never has to search for it.
   if (winMoment) {
     const { winnerIndex, progress, particles } = winMoment;
-    const worldStart = rotation + winnerIndex * sliceAngle;
-    const worldEnd = worldStart + sliceAngle;
+    const worldStart = rotation + spans[winnerIndex].start;
+    const worldEnd = rotation + spans[winnerIndex].end;
     // Fades in fast, holds, fades out over WIN_GLOW_MS.
     const glowAlpha = Math.sin(Math.min(1, progress) * Math.PI);
 
@@ -319,38 +335,34 @@ function prefersReducedMotion() {
  */
 export function computeLandingRotation(
   winnerIndex: number,
-  sliceCount: number,
+  weights: number[],
   random: () => number = Math.random,
   extraTurns = 5,
 ): number {
-  const sliceAngle = (2 * Math.PI) / sliceCount;
-  const jitter = (random() - 0.5) * sliceAngle * 0.5;
-  const winnerCenter = winnerIndex * sliceAngle + sliceAngle / 2 + jitter;
+  const { start, end } = sliceSpans(weights)[winnerIndex];
+  const width = end - start;
+  const jitter = (random() - 0.5) * width * 0.5;
+  const winnerCenter = start + width / 2 + jitter;
   const targetRotation = -Math.PI / 2 - winnerCenter;
-  return extraTurns * 2 * Math.PI + targetRotation;
+  return extraTurns * TWO_PI + targetRotation;
 }
 
 /**
  * Which slice index the fixed top needle points at for a given wheel
  * rotation - the inverse of computeLandingRotation's geometry. Used by the
  * property test to confirm every jitter sample lands back on the intended
- * winner, and available to the component itself if it ever needs to read
- * the current slice back out of a rotation value.
+ * winner, and by the component to tick as the needle crosses each boundary.
  */
-export function sliceUnderNeedle(rotation: number, sliceCount: number): number {
-  const sliceAngle = (2 * Math.PI) / sliceCount;
-  const TWO_PI = 2 * Math.PI;
+export function sliceUnderNeedle(rotation: number, weights: number[]): number {
   const local = (((-Math.PI / 2 - rotation) % TWO_PI) + TWO_PI) % TWO_PI;
-  return Math.floor(local / sliceAngle) % sliceCount;
+  const spans = sliceSpans(weights);
+  const index = spans.findIndex((sp) => local >= sp.start && local < sp.end);
+  return index === -1 ? spans.length - 1 : index;
 }
 
-export function Wheel({ slices, winnerId, fair, engineLabel, onLanded }: WheelProps) {
+export function Wheel({ slices, winnerId, engineLabel, onLanded }: WheelProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // `fair` doesn't change during one spin's lifetime, so this is a plain
-  // computed value, not state.
-  const status = fair
-    ? "Letting chance decide, fair and square…"
-    : `Spinning between your ${slices.length} finalist${slices.length === 1 ? "" : "s"}…`;
+  const status = "Chance decides — better matches get bigger slices…";
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -373,10 +385,9 @@ export function Wheel({ slices, winnerId, fair, engineLabel, onLanded }: WheelPr
     const logoImg = new Image();
     logoImg.src = "/logo-mark.svg";
 
-    const n = slices.length;
-    const sliceAngle = (2 * Math.PI) / n;
+    const weights = slices.map((s) => s.weight);
     const winnerIndex = Math.max(0, slices.findIndex((s) => s.id === winnerId));
-    const finalRotation = computeLandingRotation(winnerIndex, n);
+    const finalRotation = computeLandingRotation(winnerIndex, weights);
     const shimmerParticles = makeShimmerParticles(size / 2 - 8);
     // Convert the wobble's "progress units" overshoot into actual radians
     // scaled to this spin's total rotation, then back out again inside
@@ -410,7 +421,7 @@ export function Wheel({ slices, winnerId, fair, engineLabel, onLanded }: WheelPr
       const t = Math.min(1, elapsed / duration);
       const rotation = reduced ? finalRotation * (1 - Math.pow(1 - t, 3)) : rotationAt(t);
 
-      const tickIndex = Math.floor(((rotation % (2 * Math.PI)) + 2 * Math.PI) / sliceAngle);
+      const tickIndex = sliceUnderNeedle(rotation, weights);
       if (tickIndex !== lastTick) {
         try {
           navigator.vibrate?.(6);
@@ -483,15 +494,10 @@ export function Wheel({ slices, winnerId, fair, engineLabel, onLanded }: WheelPr
       <p role="status" aria-live="polite" className="text-sm tracking-wide text-cream/70">
         {status}
       </p>
-      <p className="mb-6 min-h-[1rem] text-[11px] text-cream/40">{!fair && engineLabel ? `via ${engineLabel}` : ""}</p>
+      <p className="mb-6 min-h-[1rem] text-[11px] text-cream/40">{engineLabel ? `via ${engineLabel}` : ""}</p>
       <div className="relative mx-auto" style={{ width: "min(80vw, 340px)" }}>
         <canvas ref={canvasRef} width={600} height={600} className="h-auto w-full" style={{ touchAction: "none" }} />
       </div>
     </div>
   );
-}
-
-export function slicesFromRanking(ranking: RankingRow[], wheelIds?: string[]) {
-  const pool = wheelIds?.length ? ranking.filter((r) => wheelIds.includes(r.id)) : ranking;
-  return pool.map((r) => ({ id: r.id, name: r.name, color: r.color }));
 }

@@ -60,7 +60,7 @@ export default async function HistoryDetailPage({ params }: { params: Promise<{ 
       </div>
 
       <div className="mb-5">
-        <HistoryMap winner={w} matchPercent={pct} />
+        <HistoryMap winner={w} caption={w.cuisine} />
       </div>
 
       {row.runnerUps.length > 0 && (

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canSubmit, decideReducer, initialState } from "./machine";
-import type { Candidate, MatchResponse, TiebreakerResponse } from "./types";
+import type { Candidate, RankedResponse, TiebreakerResponse } from "./types";
 
 const candidate = (id: string, overrides: Partial<Candidate> = {}): Candidate => ({
   id,
@@ -17,32 +17,45 @@ const candidate = (id: string, overrides: Partial<Candidate> = {}): Candidate =>
   ...overrides,
 });
 
-const matchResponse = (overrides: Partial<MatchResponse> = {}): MatchResponse => ({
-  status: "match",
-  reason: "confident",
-  confidence: 0.9,
+const engine = { id: "laya" as const, label: "Laya", score_type: "probability" as const, raw_top: 0.4, fallback_from: null, latency_ms: 100 };
+
+const rankedResponse = (overrides: Partial<RankedResponse> = {}): RankedResponse => ({
+  status: "ranked",
+  ranking: [
+    { id: "a", name: "a", probability: 0.4, color: "#fff" },
+    { id: "b", name: "b", probability: 0.3, color: "#fff" },
+    { id: "c", name: "c", probability: 0.1, color: "#fff" },
+  ],
+  question: null,
+  rounds_left: 2,
   source: "osm",
-  winner: candidate("a"),
-  ranking: [{ id: "a", name: "a", probability: 0.9, color: "#fff" }],
-  candidates: [candidate("a")],
+  candidates: [candidate("a"), candidate("b"), candidate("c")],
   round: 0,
   latency_ms: 100,
-  engine: { id: "laya", label: "Laya", score_type: "probability", raw_top: 0.9, fallback_from: null, latency_ms: 100 },
+  engine,
   ...overrides,
 });
 
-const tiebreakerResponse = (overrides: Partial<TiebreakerResponse> = {}): TiebreakerResponse => ({
+const question = { id: "setting", prompt: "?", options: [{ answer: "patio", label: "Patio", text: "Outdoor" }] };
+
+const locationConflict = (overrides: Partial<TiebreakerResponse> = {}): TiebreakerResponse => ({
   status: "tiebreaker",
-  reason: "low_confidence",
-  confidence: 0.3,
+  reason: "location_conflict",
+  confidence: 0,
   round: 0,
-  rounds_left: 1,
-  question: { id: "q1", prompt: "?", options: [{ answer: "a", label: "A", text: "a" }] },
+  rounds_left: 2,
+  question: { id: "location", prompt: "Where?", options: [{ answer: "p1", label: "Mid Valley", text: "Near Mid Valley" }] },
   contenders: [],
   candidates: [],
-  source: "osm",
-  engine: { id: "laya", label: "Laya", score_type: "probability", raw_top: 0.3, fallback_from: null, latency_ms: 100 },
+  source: "n/a",
+  engine,
   ...overrides,
+});
+
+const withRanked = (overrides: Partial<RankedResponse> = {}) => ({
+  ...initialState("laya", false),
+  phase: "results" as const,
+  lastRanked: rankedResponse(overrides),
 });
 
 describe("initialState", () => {
@@ -244,28 +257,101 @@ describe("decideReducer", () => {
     expect(s.errorMessage).toBeNull();
   });
 
-  it("SUBMIT_MATCH moves to wheel and stores the response, candidates and source", () => {
-    const response = matchResponse({ candidates: [candidate("a"), candidate("b")], source: "mock" });
-    const s = decideReducer(initialState("laya", false), { type: "SUBMIT_MATCH", response });
-    expect(s.phase).toBe("wheel");
-    expect(s.lastMatch).toBe(response);
+  it("SUBMIT_RANKED shows the list first and stores the ranking, candidates and source", () => {
+    const response = rankedResponse({ source: "overture" });
+    const s = decideReducer(initialState("laya", false), { type: "SUBMIT_RANKED", response });
+    expect(s.phase).toBe("results");
+    expect(s.lastRanked).toBe(response);
     expect(s.candidates).toEqual(response.candidates);
-    expect(s.source).toBe("mock");
+    expect(s.source).toBe("overture");
+    expect(s.chosen).toBeNull();
   });
 
-  it("SUBMIT_MATCH skips the wheel and goes straight to reveal when only one candidate survived", () => {
-    const response = matchResponse({ reason: "only_option", candidates: [candidate("a")], source: "mock" });
-    const s = decideReducer(initialState("laya", false), { type: "SUBMIT_MATCH", response });
-    expect(s.phase).toBe("reveal");
-    expect(s.lastMatch).toBe(response);
+  it("SUBMIT_RANKED shows a single surviving place as a list of one, not straight to reveal", () => {
+    const response = rankedResponse({
+      ranking: [{ id: "a", name: "a", probability: 1, color: "#fff" }],
+      candidates: [candidate("a")],
+    });
+    const s = decideReducer(initialState("laya", false), { type: "SUBMIT_RANKED", response });
+    expect(s.phase).toBe("results");
   });
 
-  it("SUBMIT_TIEBREAKER moves to mediator and stores the response, candidates and source", () => {
-    const response = tiebreakerResponse({ candidates: [candidate("a")], source: "osm" });
-    const s = decideReducer(initialState("laya", false), { type: "SUBMIT_TIEBREAKER", response });
+  it("SUBMIT_RANKED carries the search centre and clears any earlier choice", () => {
+    const centre = { name: "Mid Valley", lat: 1, lng: 2, mentioned_by: "p1" as const };
+    const earlier = { ...withRanked(), phase: "wheel" as const, spinWinnerId: "a" };
+    const s = decideReducer(earlier, { type: "SUBMIT_RANKED", response: rankedResponse({ search_center: centre }) });
+    expect(s.searchCenter).toEqual(centre);
+    expect(s.spinWinnerId).toBeNull();
+  });
+
+  it("SUBMIT_TIEBREAKER (a location conflict) moves to the mediator with a location-kind question", () => {
+    const s = decideReducer(initialState("laya", false), { type: "SUBMIT_TIEBREAKER", response: locationConflict() });
     expect(s.phase).toBe("mediator");
-    expect(s.lastTiebreaker).toBe(response);
-    expect(s.candidates).toEqual(response.candidates);
+    expect(s.mediator?.kind).toBe("location");
+    expect(s.mediator?.question.id).toBe("location");
+    expect(s.candidates).toEqual([]);
+    expect(s.source).toBeNull(); // "n/a" is not a real source to echo back
+  });
+
+  it("OPEN_QUESTION moves from the list to the optional question", () => {
+    const s = decideReducer(withRanked({ question }), { type: "OPEN_QUESTION" });
+    expect(s.phase).toBe("mediator");
+    expect(s.mediator?.kind).toBe("close");
+    expect(s.mediator?.question).toBe(question);
+  });
+
+  it("OPEN_QUESTION is ignored when no question was offered", () => {
+    const start = withRanked({ question: null });
+    expect(decideReducer(start, { type: "OPEN_QUESTION" })).toBe(start);
+  });
+
+  it("PICK goes to reveal with the place, its score, its rank and how it was chosen", () => {
+    const s = decideReducer(withRanked(), { type: "PICK", id: "b" });
+    expect(s.phase).toBe("reveal");
+    expect(s.chosen).toMatchObject({ rank: 2, total: 3, probability: 0.3, via: "picked" });
+    expect(s.chosen?.candidate.id).toBe("b");
+  });
+
+  it("PICK ignores an id that isn't in the list", () => {
+    const start = withRanked();
+    expect(decideReducer(start, { type: "PICK", id: "nope" })).toBe(start);
+  });
+
+  it("START_SPIN goes to the wheel with the already-drawn winner", () => {
+    const s = decideReducer(withRanked(), { type: "START_SPIN", winnerId: "c" });
+    expect(s.phase).toBe("wheel");
+    expect(s.spinWinnerId).toBe("c");
+  });
+
+  it("START_SPIN ignores a winner that isn't ranked", () => {
+    const start = withRanked();
+    expect(decideReducer(start, { type: "START_SPIN", winnerId: "nope" })).toBe(start);
+  });
+
+  it("WHEEL_LANDED reveals the spun place, marked as spun", () => {
+    const spinning = { ...withRanked(), phase: "wheel" as const, spinWinnerId: "c" };
+    const s = decideReducer(spinning, { type: "WHEEL_LANDED" });
+    expect(s.phase).toBe("reveal");
+    expect(s.chosen).toMatchObject({ rank: 3, via: "spun" });
+    expect(s.chosen?.candidate.id).toBe("c");
+  });
+
+  it("WHEEL_LANDED without a drawn winner does nothing", () => {
+    const start = { ...withRanked(), phase: "wheel" as const };
+    expect(decideReducer(start, { type: "WHEEL_LANDED" })).toBe(start);
+  });
+
+  it("BACK_TO_RESULTS returns to the list from a question, the wheel or the reveal, clearing the choice", () => {
+    const revealed = decideReducer(withRanked(), { type: "PICK", id: "a" });
+    const s = decideReducer(revealed, { type: "BACK_TO_RESULTS" });
+    expect(s.phase).toBe("results");
+    expect(s.chosen).toBeNull();
+    expect(s.lastRanked).toBe(revealed.lastRanked);
+  });
+
+  it("BACK_TO_RESULTS does nothing without a list to go back to", () => {
+    const start = initialState("laya", false);
+    expect(decideReducer(start, { type: "BACK_TO_RESULTS" })).toBe(start);
   });
 
   it("SUBMIT_ERROR from a first-round submit falls back to input, keeping both cards sealed so the user can retry", () => {
@@ -283,9 +369,15 @@ describe("decideReducer", () => {
     expect(s.p2Sealed).toBe(true);
   });
 
-  it("SUBMIT_ERROR from a later round falls back to mediator instead of losing the tiebreaker context", () => {
-    const submitting = { ...initialState("laya", false), phase: "submitting" as const, round: 1 };
+  it("SUBMIT_ERROR after a list exists falls back to that list instead of losing it", () => {
+    const submitting = { ...withRanked(), phase: "submitting" as const, round: 1 };
     const s = decideReducer(submitting, { type: "SUBMIT_ERROR", message: "network" });
+    expect(s.phase).toBe("results");
+  });
+
+  it("SUBMIT_ERROR while answering the location question falls back to that question", () => {
+    const asked = decideReducer(initialState("laya", false), { type: "SUBMIT_TIEBREAKER", response: locationConflict() });
+    const s = decideReducer({ ...asked, phase: "submitting" as const, round: 1 }, { type: "SUBMIT_ERROR", message: "x" });
     expect(s.phase).toBe("mediator");
   });
 
@@ -294,22 +386,17 @@ describe("decideReducer", () => {
     expect(s.phase).toBe("wheel");
   });
 
-  it("ANSWER_MEDIATOR appends the tiebreaker and advances the round from the response", () => {
-    const withTiebreaker = { ...initialState("laya", false), lastTiebreaker: tiebreakerResponse({ round: 1 }) };
-    const answer = { question_id: "q1", answer: "a", text: "A" };
-    const s = decideReducer(withTiebreaker, { type: "ANSWER_MEDIATOR", tiebreaker: answer });
+  it("ANSWER_MEDIATOR appends the tiebreaker and advances the round from the question's round", () => {
+    const asking = decideReducer(withRanked({ question, round: 1 }), { type: "OPEN_QUESTION" });
+    const answer = { question_id: "setting", answer: "patio", text: "Outdoor" };
+    const s = decideReducer(asking, { type: "ANSWER_MEDIATOR", tiebreaker: answer });
     expect(s.tiebreakers).toEqual([answer]);
     expect(s.round).toBe(2);
   });
 
-  it("SPIN_ANYWAY forces round to 2 so the next submit is treated as a fair spin", () => {
+  it("SPIN_ANYWAY forces round to 2 so an unanswered location question defaults instead of repeating", () => {
     const s = decideReducer(initialState("laya", false), { type: "SPIN_ANYWAY" });
     expect(s.round).toBe(2);
-  });
-
-  it("WHEEL_LANDED moves to reveal", () => {
-    const s = decideReducer({ ...initialState("laya", false), phase: "wheel" }, { type: "WHEEL_LANDED" });
-    expect(s.phase).toBe("reveal");
   });
 
   it("RESTORE_SESSION overlays a saved snapshot onto the current state", () => {

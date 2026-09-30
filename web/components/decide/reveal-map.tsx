@@ -15,11 +15,11 @@ const PIN_ICON = L.divIcon({
 export function RevealMap({
   winner,
   userLocation,
-  matchPercent,
+  caption,
 }: {
   winner: Candidate;
   userLocation: Location | null;
-  matchPercent: number;
+  caption: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -54,7 +54,7 @@ export function RevealMap({
 
     if (markerRef.current) markerRef.current.setLatLng([winner.lat, winner.lng]);
     else markerRef.current = L.marker([winner.lat, winner.lng], { icon: PIN_ICON }).addTo(map);
-    markerRef.current.bindPopup(`<b>${winner.name}</b><br>${matchPercent}% match`);
+    markerRef.current.bindPopup(`<b>${winner.name}</b><br>${caption}`);
 
     const bounds: [number, number][] = [[winner.lat, winner.lng]];
     if (userLocation) {
@@ -73,7 +73,7 @@ export function RevealMap({
     if (bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40] });
     else map.setView(bounds[0], 15);
     setTimeout(() => map.invalidateSize(), 100);
-  }, [winner, userLocation, matchPercent]);
+  }, [winner, userLocation, caption]);
 
   return (
     <div

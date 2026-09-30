@@ -8,6 +8,6 @@ const RevealMap = dynamic(() => import("@/components/decide/reveal-map").then((m
   loading: () => <div className="h-56 w-full animate-pulse rounded-xl bg-glass" />,
 });
 
-export function HistoryMap({ winner, matchPercent }: { winner: Candidate; matchPercent: number }) {
-  return <RevealMap winner={winner} userLocation={null} matchPercent={matchPercent} />;
+export function HistoryMap({ winner, caption }: { winner: Candidate; caption: string }) {
+  return <RevealMap winner={winner} userLocation={null} caption={caption} />;
 }
