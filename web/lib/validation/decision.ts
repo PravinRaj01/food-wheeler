@@ -33,6 +33,10 @@ export const decisionSchema = z.object({
   engine: z.enum(["laya", "gliner", "clm_8b"]),
   confidence: z.number().min(0).max(1),
   reason: z.string().max(40),
+  // Optional: absent on anything queued by an older client, and on rows
+  // saved before the ranked-results flow.
+  rank: z.number().int().min(1).max(50).optional(),
+  shortlistSize: z.number().int().min(1).max(50).optional(),
   radiusKm: z.number().min(1).max(50),
   source: z.enum(["overture", "osm", "mock"]),
   winner: candidateSchema,

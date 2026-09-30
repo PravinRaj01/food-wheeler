@@ -1,8 +1,8 @@
 # Food Wheeler
 
 Your third wheel for food decisions. Two people, one phone: you each say what you want, and an
-AI decision engine picks a real restaurant nearby — confidently, or by stepping in with one quick
-question you answer together. An installable PWA with a Flask API behind it, built on free models
+AI decision engine ranks real restaurants nearby — you pick from the list, or let a weighted wheel
+choose, with one optional question if it's too close to call. An installable PWA with a Flask API behind it, built on free models
 and free map data (Overture Maps, OpenStreetMap), so there are no paid API keys anywhere in the
 core experience.
 
@@ -25,26 +25,37 @@ core experience.
 - **Mention a place and it searches there.** "Something near Mid Valley" re-centres the search on
   that spot instead of your own position (driving distance is still measured from wherever you
   actually are). If you each name somewhere different, it asks which one before fetching anything.
+- **It listens for what you named.** Dish words count as a cuisine ("biryani" → Indian, in any
+  common spelling), and places you mention by name ("7 Spice", "Agneey's", "23 Cafe") are pinned
+  into the shortlist even past the road-distance cut. With a stated preference, the shortlist is the
+  nearest matching places — not a random sample across the radius.
 - **Hard rules before any AI.** Budgets ("under RM30", "cheap", "treat ourselves"), exclusions
   ("no seafood") and diets (halal, vegetarian, vegan) are applied deterministically in `app.py`
   before a model ever scores anything, so a model can't talk its way past "no burgers".
-- **One question when it's close.** If the top pick is under 70% confident, the third wheel asks a
-  single joint question built from what actually separates the finalists ("Patio or cozy
-  indoors?"). After two rounds it does a fair spin between the finalists, so you're never stuck.
-- **A wheel that always lands where it should.** The landing angle is solved up front, then eased
-  into; a 1,000-trial property test checks the needle lands on the chosen slice for every jitter
-  and slice count.
+- **A ranked list first.** You get the top five, best first. Bars show strength relative to the
+  top pick, and the raw model score appears only when you open a row — so a good match in a crowd
+  of eight never reads as a bad "19%". Tap "Let's go here" on any row to choose it.
+- **A spin that's actually random.** Want the wheel to decide? Its slices are sized by how well
+  each place fits, the winner is drawn once before it turns (so the odds are the slice sizes), and
+  the needle lands where the draw says. A 1,000-trial property test checks the landing angle for
+  every jitter, slice count and set of weights.
+- **One question when it's close — if you want it.** When the top two are neck and neck and
+  something separates them ("Patio or cozy indoors?"), a "Settle it with one question" button
+  appears. It's never forced.
 - **Pluggable engines.** Laya, GLiNER2.5-Decide, or a remote CLM-8B, picked in Settings. Developer
   mode scores each round with every available engine and shows them side by side.
-- **Explore, history, offline.** Browse nearby places on a map with local cuisine filters, keep a
-  synced decision history (guests' rounds are queued locally and claimed on sign-in), switch
-  between light and dark themes, and install it to your home screen.
+- **A history you can manage.** Every decision is saved with how it was made ("Picked · #1 of 8",
+  "Spun · #3 of 5"). Search places and what you asked for, filter by cuisine or Picked/Spun, star
+  favourites (pinned on top, with their own tab), delete one or clear everything, and page back
+  through older rounds. Guests' rounds are queued locally and claimed on sign-in.
+- **Explore, offline.** Browse nearby places on a map with local cuisine filters, switch between
+  light and dark themes, and install it to your home screen.
 
 ## Architecture
 
 ```
 Browser (Next.js PWA)
-  ├─ decide flow                  sealed cards → deciding animation → canvas wheel / mediator
+  ├─ decide flow                  sealed cards → deciding animation → ranked list → weighted wheel / question
   ├─ Geolocation + Web Speech     location and voice input, browser-native
   ├─ IndexedDB outbox             guest decisions, synced to History after sign-in
   ├─ service worker               app shell + branded offline page
@@ -57,16 +68,16 @@ Flask API (Google Cloud Run)
   ├─ Nominatim (geocoding)        resolves a mentioned place ("near Mid Valley") to a search centre
   ├─ hard guards                  budget / exclusions / diet, applied before any model
   ├─ EngineManager                Laya · GLiNER2.5-Decide · CLM-8B (remote), lazy-loaded, RAM-budgeted
-  └─ ranking + mediator           70% confidence rule, one joint question, fair spin after 2 rounds
+  └─ ranking + question           full ranking, ties by distance/price; optional question when close
 
 Next.js server (Vercel)
   ├─ Auth.js v5 (JWT sessions)    Google + email/password (argon2)
-  ├─ server actions               history sync, every query scoped to the signed-in user
+  ├─ server actions               history sync, search, favourites, delete; every query scoped to the signed-in user
   └─ Neon Postgres (Drizzle)      users, accounts, decisions, preferences
 ```
 
-Every engine returns a plain probability per restaurant, so the confidence rule, tie detection and
-the mediator behave identically whichever one is selected. Everything below `engine.score()` in
+Every engine returns a plain probability per restaurant, so the ranking, tie-breaking and the
+optional question behave identically whichever one is selected. Everything below `engine.score()` in
 `app.py` is engine-agnostic; each engine is a small wrapper in `engines/`.
 
 | Engine | Notes |
@@ -180,11 +191,11 @@ Web app (`web/.env.local`, see `web/.env.example`):
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest tests/        # 170 tests: guards, ranking/mediator, radius & location rules, same-country
+.venv/bin/python -m pytest tests/        # 191 tests: guards, ranking/question, dish & named-place shortlist, radius & location rules, same-country
                                           # filtering, the Overture bundle, OSRM routing, location-mention
                                           # extraction/geocoding, CORS, rate limit, engine manager
-cd web && npm test                       # 73 tests: decide reducer, API client, wheel landing property test, sync
-                                          # outbox, distance formatting, navigation-app links
+cd web && npm test                       # 113 tests: decide reducer, API client, weighted wheel, history queries,
+                                          # filters & labels, sync outbox, distance formatting
 cd web && npm run lint && npm run build
 .venv/bin/python scripts/compare_engines.py   # real engines, real latency/confidence on sample couples
 ```

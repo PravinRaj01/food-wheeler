@@ -7,6 +7,8 @@ import { getDecisionForUser } from "@/lib/db/queries";
 import { formatDistance } from "@/lib/decide/distance";
 import { HistoryMap } from "@/components/history/history-map";
 import { DirectionsButton } from "@/components/decide/directions-button";
+import { DetailActions } from "@/components/history/detail-actions";
+import { badgeLabel } from "@/lib/history/labels";
 
 export default async function HistoryDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -17,7 +19,6 @@ export default async function HistoryDetailPage({ params }: { params: Promise<{ 
   if (!row) notFound();
 
   const w = row.winner;
-  const pct = Math.round(row.confidence * 100);
 
   return (
     <div className="mx-auto max-w-lg px-5 py-10">
@@ -31,7 +32,7 @@ export default async function HistoryDetailPage({ params }: { params: Promise<{ 
       <div className="mb-1 flex items-start justify-between gap-3">
         <h1 className="font-display text-2xl text-cream">{w.name}</h1>
         <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--ember)_18%,transparent)] px-2.5 py-1 text-[11px] text-ember">
-          {pct}% match · {row.engine}
+          {badgeLabel(row)}
         </span>
       </div>
       <p className="mb-3 text-sm text-cream/60">
@@ -65,7 +66,7 @@ export default async function HistoryDetailPage({ params }: { params: Promise<{ 
 
       {row.runnerUps.length > 0 && (
         <p className="mb-5 text-xs text-cream/40">
-          Also considered: {row.runnerUps.map((r) => `${r.name} (${Math.round(r.probability * 100)}%)`).join(", ")}
+          Also considered: {row.runnerUps.map((r) => r.name).join(", ")}
         </p>
       )}
 
@@ -78,6 +79,7 @@ export default async function HistoryDetailPage({ params }: { params: Promise<{ 
           Decide again
         </Link>
       </div>
+      <DetailActions id={row.id} name={w.name} favourite={row.favourite} />
     </div>
   );
 }

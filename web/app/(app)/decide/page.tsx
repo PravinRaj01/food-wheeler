@@ -89,6 +89,8 @@ export default function DecidePage() {
       engine: m.engine.id,
       confidence: chosen.probability,
       reason: chosen.via,
+      rank: chosen.rank,
+      shortlistSize: chosen.total,
       radiusKm: state.radiusKm,
       source: m.source,
       winner: chosen.candidate,

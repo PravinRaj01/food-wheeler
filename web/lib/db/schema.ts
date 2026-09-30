@@ -1,4 +1,4 @@
-import { index, integer, jsonb, pgTable, primaryKey, real, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, primaryKey, real, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 import type { AdapterAccountType } from "next-auth/adapters";
 import type { Candidate, EngineId, Tiebreaker } from "@/lib/decide/types";
 
@@ -75,6 +75,12 @@ export const decisions = pgTable(
     winner: jsonb("winner").$type<Candidate>().notNull(),
     runnerUps: jsonb("runner_ups").$type<{ id: string; name: string; probability: number }[]>().notNull(),
     tiebreakers: jsonb("tiebreakers").$type<Tiebreaker[]>().notNull(),
+    // Where the chosen place sat in the ranked list, and how many were
+    // ranked - null on rows saved before the ranked-results flow existed
+    // (they only have `reason`, which lib/history/labels.ts maps).
+    rank: integer("rank"),
+    shortlistSize: integer("shortlist_size"),
+    favourite: boolean("favourite").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

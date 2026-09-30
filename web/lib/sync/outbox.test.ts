@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { closeOutbox, enqueueDecision, flushOutbox, outboxCounts, type PushFn } from "./outbox";
+import { clearOutbox, closeOutbox, enqueueDecision, flushOutbox, outboxCounts, type PushFn } from "./outbox";
 import type { DecisionPayload } from "@/lib/validation/decision";
 
 const payload = (clientId: string, overrides: Partial<DecisionPayload> = {}): DecisionPayload => ({
@@ -144,5 +144,24 @@ describe("enqueueDecision / flushOutbox", () => {
 
     await flushOutbox("user-1", push, 1); // batchSize 1 forces two potential rounds
     expect(calls).toBe(1); // stops immediately, doesn't try the second entry
+  });
+});
+
+describe("clearOutbox", () => {
+  it("drops the user's own entries and unclaimed guest ones, so nothing flushes back after a clear", async () => {
+    await enqueueDecision("user-1", payload("mine"));
+    await enqueueDecision(null, payload("guest"));
+    await clearOutbox("user-1");
+
+    expect(await outboxCounts("user-1")).toEqual({ pending: 0, failed: 0 });
+    const push = vi.fn<PushFn>(async () => ({ status: "ok", results: [] }));
+    expect(await flushOutbox("user-1", push)).toEqual({ pushed: 0, rejected: 0, stopped: null });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("never touches another signed-in user's queued entries", async () => {
+    await enqueueDecision("user-2", payload("theirs"));
+    await clearOutbox("user-1");
+    expect(await outboxCounts("user-2")).toEqual({ pending: 1, failed: 0 });
   });
 });

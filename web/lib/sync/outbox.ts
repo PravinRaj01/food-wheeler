@@ -96,6 +96,22 @@ export async function outboxCounts(userId: string) {
   };
 }
 
+/**
+ * Drops every entry `userId` could flush (their own, plus unclaimed guest
+ * ones). "Clear history" pairs this with the server delete: without it, a
+ * decision still waiting to sync - or one made offline - would flush right
+ * back into the account seconds after it was cleared.
+ */
+export async function clearOutbox(userId: string): Promise<void> {
+  const db = await getDb();
+  const tx = db.transaction(STORE, "readwrite");
+  const all = (await tx.store.getAll()) as OutboxEntry[];
+  for (const e of all) {
+    if (e.ownerId === userId || e.ownerId === null) await tx.store.delete(e.clientId);
+  }
+  await tx.done;
+}
+
 async function settle(entry: OutboxEntry, outcome: "saved" | "rejected", error?: string) {
   const db = await getDb();
   const tx = db.transaction(STORE, "readwrite");
