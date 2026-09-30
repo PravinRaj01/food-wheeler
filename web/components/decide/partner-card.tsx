@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { Lock, X } from "lucide-react";
+import { ChevronDown, Lock, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { local } from "@/lib/safe-storage";
 import { MicButton } from "@/components/decide/mic-button";
 import { useSpeechRecognition, type SpeechErrorCode } from "@/lib/hooks/use-speech-recognition";
 import { SEALED_LABEL, NO_PREFERENCE_LABEL } from "@/lib/copy";
@@ -16,6 +17,11 @@ export interface ChipGroup {
   label: string;
   chips: Chip[];
 }
+
+// Whether the suggestion chips are unfolded. Remembered across rounds (and
+// shared by both partners' cards) so someone who likes them open keeps them
+// open, and everyone else gets the shorter panel with Done in easy reach.
+const CHIPS_OPEN_KEY = "fw_chips_open";
 
 const SPEECH_ERROR_MESSAGES: Record<SpeechErrorCode, string> = {
   "not-allowed": "Microphone blocked. Allow it in your browser settings.",
@@ -121,6 +127,17 @@ export function PartnerCardPanel({
   const reduced = useReducedMotion();
   const [interim, setInterim] = useState("");
   const [micBlocked, setMicBlocked] = useState(false);
+  // Read once on mount - this panel only ever mounts after a tap, in the
+  // browser, so there's no server render for it to disagree with. Closed by
+  // default: the suggestions are a shortcut, not the main way in.
+  const [chipsOpen, setChipsOpen] = useState(() => local.get(CHIPS_OPEN_KEY, "0") === "1");
+  const chipsId = `chips-${number}`;
+
+  function toggleChips() {
+    const next = !chipsOpen;
+    setChipsOpen(next);
+    local.set(CHIPS_OPEN_KEY, next ? "1" : "0");
+  }
 
   // useSpeechRecognition stashes fresh callbacks in a ref on every render
   // (see its implementation), so this closure always sees the `text` value
@@ -153,7 +170,7 @@ export function PartnerCardPanel({
       className="fixed inset-x-4 top-20 z-50 max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-2xl border border-line p-5 shadow-2xl backdrop-blur-xl md:inset-x-auto md:left-1/2 md:w-full md:max-w-md md:-translate-x-1/2"
       style={{ background: "color-mix(in oklab, var(--canvas-fg) 16%, var(--canvas))" }}
     >
-      <div className="mb-3 flex items-center justify-between">
+      <motion.div layout="position" className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span
             className="flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold"
@@ -166,7 +183,7 @@ export function PartnerCardPanel({
         <button type="button" onClick={onClose} className="text-cream/50 hover:text-cream" aria-label="Close">
           <X className="h-5 w-5" />
         </button>
-      </div>
+      </motion.div>
 
       {sealed ? (
         <>
@@ -191,7 +208,7 @@ export function PartnerCardPanel({
         </>
       ) : (
         <>
-          <div className="relative">
+          <motion.div layout="position" className="relative">
             <textarea
               autoFocus
               rows={3}
@@ -204,37 +221,53 @@ export function PartnerCardPanel({
             {speech.isSupported && (
               <MicButton listening={speech.isListening} disabled={micBlocked} onClick={speech.toggle} />
             )}
-          </div>
-          <div className="mt-1 min-h-[1rem] text-xs text-cream/40 italic">{interim && `"${interim}"`}</div>
+          </motion.div>
+          <motion.div layout="position" className="mt-1 min-h-[1rem] text-xs text-cream/40 italic">
+            {interim && `"${interim}"`}
+          </motion.div>
 
-          <div className="mt-3 space-y-2">
-            {chipGroups.map((group) => (
-              <div key={group.label}>
-                <p className="mb-1 text-[10px] font-medium tracking-wide text-cream/35 uppercase">{group.label}</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {group.chips.map((chip) => {
-                    const label = typeof chip === "string" ? chip : chip.label;
-                    const insert = typeof chip === "string" ? chip : chip.insert;
-                    return (
-                      <button
-                        key={label}
-                        type="button"
-                        onClick={() => {
-                          const sep = text && !/[\s,]$/.test(text) ? ", " : "";
-                          onTextChange(text + sep + insert, "typed");
-                        }}
-                        className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors hover:text-cream"
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
+          <motion.button
+            layout="position"
+            type="button"
+            aria-expanded={chipsOpen}
+            aria-controls={chipsId}
+            onClick={toggleChips}
+            className="mt-2 flex items-center gap-1 text-xs font-medium text-cream/60 transition-colors hover:text-cream"
+          >
+            Suggestions
+            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", chipsOpen && "rotate-180")} />
+          </motion.button>
+
+          {chipsOpen && (
+            <motion.div layout="position" id={chipsId} className="mt-2 space-y-2">
+              {chipGroups.map((group) => (
+                <div key={group.label}>
+                  <p className="mb-1 text-[10px] font-medium tracking-wide text-cream/35 uppercase">{group.label}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.chips.map((chip) => {
+                      const label = typeof chip === "string" ? chip : chip.label;
+                      const insert = typeof chip === "string" ? chip : chip.insert;
+                      return (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => {
+                            const sep = text && !/[\s,]$/.test(text) ? ", " : "";
+                            onTextChange(text + sep + insert, "typed");
+                          }}
+                          className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors hover:text-cream"
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </motion.div>
+          )}
 
-          <div className="mt-4 flex items-center justify-between gap-3">
+          <motion.div layout="position" className="mt-4 flex items-center justify-between gap-3">
             <button
               type="button"
               onClick={onNoPreference}
@@ -250,7 +283,7 @@ export function PartnerCardPanel({
             >
               Done
             </button>
-          </div>
+          </motion.div>
         </>
       )}
     </motion.div>
