@@ -71,6 +71,10 @@ export interface ComparisonEntry {
    * is the response's `ranking`). Lets Dev Mode flip the results list to it. */
   ranking?: RankingRow[];
   error?: "ENGINE_UNAVAILABLE";
+  /** With `error`: the engine is still loading (a cold start outlasted the
+   * Dev Mode deadline) and will be ready for the next round - as opposed to
+   * being unavailable outright (e.g. its server isn't configured). */
+  loading?: boolean;
   reason?: string;
 }
 

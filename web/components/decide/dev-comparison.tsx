@@ -4,9 +4,10 @@ import type { ComparisonEntry, EngineId } from "@/lib/decide/types";
 
 /** Dev Mode's "how would every engine have scored this" readout, one small
  * card per engine. Each is a button: tapping it flips the list above to THAT
- * engine's ranking and scores (tapping the primary flips back). An engine that
- * didn't run (unavailable, timed out) is left out entirely rather than shown
- * as "n/a" - there's nothing to compare for it. */
+ * engine's ranking and scores (tapping the primary flips back). An engine
+ * that's still loading gets a muted "warming up" card, so its absence isn't a
+ * mystery; one that's unavailable outright (not configured) is left out -
+ * there's nothing to compare, and it would be the same card every round. */
 export function DevComparison({
   comparison,
   viewing,
@@ -17,7 +18,7 @@ export function DevComparison({
   viewing: EngineId;
   onSelect: (id: EngineId) => void;
 }) {
-  const entries = Object.entries(comparison).filter(([, c]) => !c.error) as [EngineId, ComparisonEntry][];
+  const entries = Object.entries(comparison).filter(([, c]) => !c.error || c.loading) as [EngineId, ComparisonEntry][];
   if (entries.length === 0) return null;
 
   return (
@@ -25,6 +26,20 @@ export function DevComparison({
       {entries.map(([id, c]) => {
         const Icon = ENGINE_ICONS[id];
         const accent = ENGINE_ACCENTS[id];
+        if (c.loading) {
+          return (
+            <div key={id} className="rounded-xl border border-line bg-glass p-3 opacity-70" aria-label={`${id} is still loading`}>
+              <div className="mb-2 flex items-center gap-1.5">
+                <Icon className="h-3.5 w-3.5" style={{ color: accent }} />
+                <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: accent }}>
+                  {id}
+                </span>
+              </div>
+              <p className="text-sm font-medium text-cream/70">Warming up…</p>
+              <p className="mt-1 text-[10px] text-cream/40">Still loading — it&apos;ll be here next round.</p>
+            </div>
+          );
+        }
         const pct = Math.round((c.top_p ?? 0) * 100);
         const selected = id === viewing;
         return (

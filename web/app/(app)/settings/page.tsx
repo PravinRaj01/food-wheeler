@@ -262,6 +262,9 @@ export default function SettingsPage() {
             onCheckedChange={(checked) => {
               setDevModeEnabled(checked);
               bumpVersion();
+              // Its comparison scores with every engine; load them now so the
+              // first round doesn't find them cold.
+              if (checked) for (const e of engines) if (e.available && !e.loaded) warmEngine(e.id).catch(() => {});
             }}
             className="relative h-6 w-11 shrink-0 rounded-full bg-glass-strong data-[state=checked]:bg-ember"
           >

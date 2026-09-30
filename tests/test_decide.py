@@ -4,6 +4,8 @@ injected via a throwaway EngineManager, so these run fast and never touch
 torch/laya/gliner2. Overpass is mocked out too.
 """
 import sys
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -743,6 +745,50 @@ def test_dev_mode_secondary_ranking_breaks_ties_like_the_main_one(client, fake_m
     engine_b._probabilities = {"a": 0.5, "b": 0.25, "c": 0.25}
     data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, dev_mode=True).get_json()
     assert [r["id"] for r in data["comparison"]["engine_b"]["ranking"]] == [r["id"] for r in data["ranking"]]
+
+
+class _SlowEngine(FakeEngine):
+    """Blocks in score() until released - stands in for a cold model load."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.release = threading.Event()
+
+    def score(self, state, candidates, exclusions):
+        self.release.wait(timeout=5)
+        return super().score(state, candidates, exclusions)
+
+
+def test_dev_mode_slow_engine_is_flagged_loading_and_does_not_hold_up_the_response(client, monkeypatch):
+    fast = FakeEngine("engine_a", probabilities={"a": 0.80, "b": 0.10, "c": 0.10})
+    slow = _SlowEngine("engine_b", probabilities={"a": 0.20, "b": 0.70, "c": 0.10})
+    mgr = EngineManager([fast, slow], default_id="engine_a")
+    monkeypatch.setattr(app_module, "SECONDARY_ENGINE_TIMEOUT_S", 0.3)
+    try:
+        with patch.object(app_module, "manager", mgr):
+            started = time.monotonic()
+            data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, dev_mode=True).get_json()
+            elapsed = time.monotonic() - started
+    finally:
+        slow.release.set()
+    assert data["status"] == "ranked"
+    # Answered at the deadline - it did not wait for the slow engine (which is
+    # blocked until released, well past this).
+    assert elapsed < 2.0
+    assert data["comparison"]["engine_b"]["error"] == "ENGINE_UNAVAILABLE"
+    assert data["comparison"]["engine_b"]["loading"] is True
+    assert data["comparison"]["engine_a"]["primary"] is True
+
+
+def test_dev_mode_permanently_unavailable_engine_is_not_marked_loading(client, fake_manager):
+    _, engine_a, engine_b = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    engine_b._available = False
+    engine_b._reason = "GPU embeddings server not configured"
+    data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, dev_mode=True).get_json()
+    entry = data["comparison"]["engine_b"]
+    assert entry["error"] == "ENGINE_UNAVAILABLE"
+    assert "loading" not in entry
 
 
 def test_dev_mode_secondary_failure_does_not_break_response(client, fake_manager):

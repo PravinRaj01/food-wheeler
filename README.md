@@ -45,6 +45,8 @@ core experience.
 - **Pluggable engines.** Laya, GLiNER2.5-Decide, or a remote CLM-8B, picked in Settings. Developer
   mode scores each round with every available engine and shows them side by side; tap an engine's
   card to flip the list to *its* ranking and scores, with each place's move against the primary.
+  Turning it on pre-loads every available engine, and one that's still cold-loading shows as
+  "warming up" instead of vanishing.
 - **It remembers where you were.** Leave Decide for another page (or reload, or let the PWA get
   backgrounded) and you come back to the same step — the cards, the ranked list, an open
   question, the reveal — without re-running the search or saving the decision twice. A round
@@ -197,7 +199,7 @@ Web app (`web/.env.local`, see `web/.env.example`):
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest tests/        # 193 tests: guards, ranking/question, dish & named-place shortlist, radius & location rules, same-country
+.venv/bin/python -m pytest tests/        # 195 tests: guards, ranking/question, dish & named-place shortlist, radius & location rules, same-country
                                           # filtering, the Overture bundle, OSRM routing, location-mention
                                           # extraction/geocoding, CORS, rate limit, engine manager
 cd web && npm test                       # 138 tests: decide reducer (incl. engine view & session restore), API client,

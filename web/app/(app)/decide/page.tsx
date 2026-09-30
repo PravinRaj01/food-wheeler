@@ -254,6 +254,11 @@ export default function DecidePage() {
           if (fallback) dispatch({ type: "SET_ENGINE", engine: fallback });
         }
         warmEngine(state.engine).catch(() => {});
+        // Dev Mode scores with every engine, and a cold one outlasts its
+        // deadline on the first round - so with it on, load them all now.
+        if (isDevModeEnabled()) {
+          for (const e of list) if (e.available && e.id !== state.engine) warmEngine(e.id).catch(() => {});
+        }
       })
       .catch(() => {});
     // Only on mount - engine availability is refreshed here, not polled.

@@ -679,19 +679,30 @@ def run_dev_mode_comparison(primary_engine_id: str, primary_result, state: str,
     if not other_ids:
         return comparison
 
-    with ThreadPoolExecutor(max_workers=len(other_ids)) as pool:
+    # Not `with ThreadPoolExecutor(...)`: leaving that block waits for every
+    # worker, so a cold engine still holding its load made the request take the
+    # full load time AND get reported as "timed out". Here the response goes
+    # out at the deadline and the slow engine keeps loading in the background,
+    # which is exactly what makes it ready for the next round.
+    pool = ThreadPoolExecutor(max_workers=len(other_ids))
+    try:
         futures = {
             pool.submit(_score_secondary, eid, state, filtered, exclusions, by_id,
                         winner_id, primary_engine_id): eid
             for eid in other_ids
         }
+        deadline = time.monotonic() + SECONDARY_ENGINE_TIMEOUT_S
         for fut, eid in futures.items():
             try:
-                comparison[eid] = fut.result(timeout=SECONDARY_ENGINE_TIMEOUT_S)
+                comparison[eid] = fut.result(timeout=max(0.0, deadline - time.monotonic()))
             except FutureTimeoutError:
-                comparison[eid] = {"error": "ENGINE_UNAVAILABLE", "reason": "timed out"}
+                # "loading" (not a plain error) so the UI can say it's warming
+                # up instead of quietly leaving the engine out.
+                comparison[eid] = {"error": "ENGINE_UNAVAILABLE", "reason": "still loading", "loading": True}
             except Exception as exc:  # noqa: BLE001 - defense in depth
                 comparison[eid] = {"error": "ENGINE_UNAVAILABLE", "reason": str(exc)}
+    finally:
+        pool.shutdown(wait=False)
 
     return comparison
 
