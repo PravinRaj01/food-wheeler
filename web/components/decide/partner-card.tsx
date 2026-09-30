@@ -8,9 +8,13 @@ import { MicButton } from "@/components/decide/mic-button";
 import { useSpeechRecognition, type SpeechErrorCode } from "@/lib/hooks/use-speech-recognition";
 import { SEALED_LABEL, NO_PREFERENCE_LABEL } from "@/lib/copy";
 
+/** A suggestion chip: plain text, or a label that inserts different words -
+ * "Chicken" adds "must have chicken", which the server reads as a demand. */
+export type Chip = string | { label: string; insert: string };
+
 export interface ChipGroup {
   label: string;
-  chips: string[];
+  chips: Chip[];
 }
 
 const SPEECH_ERROR_MESSAGES: Record<SpeechErrorCode, string> = {
@@ -208,19 +212,23 @@ export function PartnerCardPanel({
               <div key={group.label}>
                 <p className="mb-1 text-[10px] font-medium tracking-wide text-cream/35 uppercase">{group.label}</p>
                 <div className="flex flex-wrap gap-1.5">
-                  {group.chips.map((chip) => (
-                    <button
-                      key={chip}
-                      type="button"
-                      onClick={() => {
-                        const sep = text && !/[\s,]$/.test(text) ? ", " : "";
-                        onTextChange(text + sep + chip, "typed");
-                      }}
-                      className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors hover:text-cream"
-                    >
-                      {chip}
-                    </button>
-                  ))}
+                  {group.chips.map((chip) => {
+                    const label = typeof chip === "string" ? chip : chip.label;
+                    const insert = typeof chip === "string" ? chip : chip.insert;
+                    return (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => {
+                          const sep = text && !/[\s,]$/.test(text) ? ", " : "";
+                          onTextChange(text + sep + insert, "typed");
+                        }}
+                        className="rounded-full border border-line bg-glass px-3 py-1.5 text-xs text-cream/70 transition-colors hover:text-cream"
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ))}

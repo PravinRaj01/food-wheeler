@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Check, Dices, MessageCircleQuestion } from "lucide-react";
 import type { Candidate, EngineId, RankedResponse, RankingRow } from "@/lib/decide/types";
 import { formatDistance } from "@/lib/decide/distance";
+import { mealCaption, mustsCaption, relaxedCaption } from "@/lib/decide/meal";
 import { SHORTLIST_SIZE } from "@/lib/decide/weighted";
 import { cn } from "@/lib/utils";
 import { DevComparison } from "@/components/decide/dev-comparison";
@@ -58,6 +59,9 @@ export function ResultsList({
   const rows = response.ranking.slice(0, SHORTLIST_SIZE);
   const byId = new Map<string, Candidate>(response.candidates.map((c) => [c.id, c]));
   const topP = rows[0]?.probability || 1;
+  const meal = mealCaption(response.meal);
+  const musts = mustsCaption(response.musts);
+  const relaxed = relaxedCaption(response.relaxed);
   const viewingOther = response.engine.id !== primary.id;
   const primaryIndex = new Map(primary.ranking.map((r, i) => [r.id, i]));
   const centre = response.search_center;
@@ -76,6 +80,13 @@ export function ResultsList({
       <h2 className="font-display mt-1 text-2xl leading-tight text-cream">
         {rows.length === 1 ? "One place fits" : `Your top ${rows.length}`}
       </h2>
+      {(meal || musts) && (
+        <p className="mt-1 text-xs text-cream/60">
+          {[meal?.text, musts].filter(Boolean).join(" · ")}
+          {meal?.hint && <span className="text-cream/35"> ({meal.hint})</span>}
+        </p>
+      )}
+      {relaxed && <p className="mt-1 text-xs text-ember/90">{relaxed}</p>}
       {centre && (
         <p className="mt-1 text-xs text-cream/50">
           Searched near {centre.name} — {centreOwner}&apos;s idea

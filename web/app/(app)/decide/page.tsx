@@ -25,6 +25,7 @@ import { PartnerCardCollapsed, PartnerCardPanel } from "@/components/decide/part
 import { RadiusSlider } from "@/components/decide/radius-slider";
 import { NamesStep } from "@/components/decide/names-step";
 import { DecidingSequence } from "@/components/decide/deciding-sequence";
+import { MealChip } from "@/components/decide/meal-chip";
 import type { PendingDecideResult } from "@/components/decide/deciding-sequence";
 import { LocationPrompt } from "@/components/decide/location-prompt";
 import { Wheel } from "@/components/decide/wheel";
@@ -49,7 +50,20 @@ const CHIP_GROUPS = [
   { label: "Mood", chips: ["Quick bite", "Sit-down"] },
   { label: "Heat", chips: ["Spicy", "Mild"] },
   { label: "Budget", chips: ["Budget", "Mid-range", "Treat ourselves"] },
-  { label: "Must", chips: ["Halal", "Vegetarian"] },
+  {
+    label: "Must",
+    chips: [
+      "Halal",
+      "Vegetarian",
+      // Inserted as a demand ("must have chicken"), which the server turns
+      // into a hard rule - see musts.py - rather than just a mention.
+      { label: "Chicken", insert: "must have chicken" },
+      { label: "Seafood", insert: "must have seafood" },
+      { label: "Beef", insert: "must have beef" },
+      { label: "Noodles", insert: "must have noodles" },
+      { label: "Rice", insert: "must have rice" },
+    ],
+  },
   { label: "Nope", chips: ["No seafood", "No fast food"] },
 ];
 
@@ -291,6 +305,10 @@ export default function DecidePage() {
         round: overrides?.round ?? state.round,
         radius_km: state.radiusKm,
         cross_border: isCrossBorderEnabled(),
+        // The phone's own clock - the server can't know what time it is where
+        // they are - so it can guess the meal; mealChoice only when they set it.
+        local_hour: new Date().getHours(),
+        meal: state.mealChoice,
       };
       try {
         const res = await decide(body);
@@ -320,7 +338,7 @@ export default function DecidePage() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.engine, state.devMode, state.p1Text, state.p1Mode, state.p2Text, state.p2Mode, loc.location, state.candidates, state.source, state.tiebreakers, state.round, state.radiusKm],
+    [state.engine, state.devMode, state.p1Text, state.p1Mode, state.p2Text, state.p2Mode, loc.location, state.candidates, state.source, state.tiebreakers, state.round, state.radiusKm, state.mealChoice],
   );
 
   // "Find Our Table" goes through here first: a real location is required,
@@ -470,6 +488,8 @@ export default function DecidePage() {
                 )}
               </div>
             </div>
+
+            <MealChip value={state.mealChoice} onChange={(meal) => dispatch({ type: "SET_MEAL", meal })} />
 
             {canSubmit(state) && (
               <>

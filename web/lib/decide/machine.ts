@@ -4,6 +4,7 @@ import type {
   Candidate,
   Choice,
   EngineId,
+  MealId,
   MediatorQuestion,
   RankedResponse,
   RankingRow,
@@ -39,6 +40,7 @@ export interface SessionSnapshot {
   p2Mode: "typed" | "voice";
   p2Sealed: boolean;
   radiusKm: number;
+  mealChoice?: MealId | null;
   lastRanked?: RankedResponse | null;
   viewEngine?: EngineId | null;
   mediator?: DecideState["mediator"];
@@ -78,6 +80,9 @@ export interface DecideState {
   tiebreakers: Tiebreaker[];
   round: number;
   radiusKm: number;
+  /** The meal the couple picked on the "Looking for" chip, or null to let the
+   * server guess from what they typed and the time of day. */
+  mealChoice: MealId | null;
   engine: EngineId;
   engineLocked: boolean;
   devMode: boolean;
@@ -121,6 +126,7 @@ export type Action =
   | { type: "SEAL_NO_PREFERENCE"; card: 1 | 2 }
   | { type: "SET_ENGINE"; engine: EngineId }
   | { type: "SET_RADIUS_KM"; km: number }
+  | { type: "SET_MEAL"; meal: MealId | null }
   | { type: "SEED_CANDIDATES"; candidates: Candidate[]; source: "overture" | "osm" | "mock" }
   | { type: "SET_DEV_MODE"; value: boolean }
   | { type: "SUBMIT_START" }
@@ -163,6 +169,7 @@ export function initialState(engine: EngineId, devMode: boolean): DecideState {
     tiebreakers: [],
     round: 0,
     radiusKm: DEFAULT_RADIUS_KM,
+    mealChoice: null,
     engine,
     engineLocked: false,
     devMode,
@@ -264,6 +271,10 @@ export function decideReducer(state: DecideState, action: Action): DecideState {
       return state.engineLocked
         ? state
         : { ...state, radiusKm: action.km, candidates: null, source: null, searchCenter: null };
+    case "SET_MEAL":
+      // Only while the couple are still setting up - once a round is running
+      // the shortlist has already been kept to one meal.
+      return state.phase === "input" ? { ...state, mealChoice: action.meal } : state;
     case "SEED_CANDIDATES":
       return { ...state, candidates: action.candidates, source: action.source };
     case "SET_DEV_MODE":
@@ -399,6 +410,7 @@ export function snapshotOf(state: DecideState, now: number): SessionSnapshot | n
     p2Mode: state.p2Mode,
     p2Sealed: state.p2Sealed,
     radiusKm: state.radiusKm,
+    mealChoice: state.mealChoice,
     lastRanked: state.lastRanked,
     viewEngine: state.viewEngine,
     mediator: state.mediator,
@@ -434,6 +446,7 @@ export function restoreFromSnapshot(snap: SessionSnapshot, now: number): Partial
     p2Mode: snap.p2Mode,
     p2Sealed: snap.p2Sealed,
     radiusKm: snap.radiusKm,
+    mealChoice: snap.mealChoice ?? null,
   };
   const noRound = {
     lastRanked: null,

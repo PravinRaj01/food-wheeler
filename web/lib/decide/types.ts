@@ -110,6 +110,17 @@ export interface SearchCenter {
   mentioned_by: "p1" | "p2";
 }
 
+/** Which meal the couple is after - see lib/decide/meal.ts and the server's
+ * meals.py, which keeps the shortlist to places that suit it. */
+export type MealId = "breakfast" | "lunch" | "dinner" | "supper" | "snack" | "any";
+
+/** What the server settled on, and why: the couple's own pick ("chosen"),
+ * something they typed ("text"), the local time ("clock"), or nothing. */
+export interface MealInfo {
+  id: MealId;
+  source: "chosen" | "text" | "clock" | "none";
+}
+
 export interface DecideRequest {
   engine: EngineId;
   dev_mode: boolean;
@@ -123,6 +134,10 @@ export interface DecideRequest {
   round: number;
   radius_km: number;
   cross_border: boolean;
+  /** The phone's local hour (0-23), so the server can guess the meal. */
+  local_hour: number;
+  /** Only set when the couple picked a meal themselves; null = let it guess. */
+  meal: MealId | null;
 }
 
 /** The engine's full opinion of every shortlisted place, best first - the
@@ -147,6 +162,13 @@ export interface RankedResponse {
    * frontend currently reads it. */
   country?: string | null;
   search_center?: SearchCenter | null;
+  /** The meal the shortlist was kept to, and why. */
+  meal?: MealInfo;
+  /** Foods a partner demanded ("must have chicken"), as the server read them. */
+  musts?: string[];
+  /** Demanded foods no shortlisted place clearly serves - the list says so
+   * rather than pretending. */
+  relaxed?: string[];
 }
 
 /** The one forced question left: the partners named two different places to

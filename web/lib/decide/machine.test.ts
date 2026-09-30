@@ -687,3 +687,44 @@ describe("session persistence", () => {
     expect(decideReducer(s, { type: "RESET" }).savedKey).toBeNull();
   });
 });
+
+describe("meal choice", () => {
+  it("starts unset, meaning: let the server guess from the text and the clock", () => {
+    expect(initialState("laya", false).mealChoice).toBeNull();
+  });
+
+  it("SET_MEAL records the couple's pick while they're setting up, and null goes back to auto", () => {
+    const input = { ...initialState("laya", false), phase: "input" as const };
+    const picked = decideReducer(input, { type: "SET_MEAL", meal: "dinner" });
+    expect(picked.mealChoice).toBe("dinner");
+    expect(decideReducer(picked, { type: "SET_MEAL", meal: null }).mealChoice).toBeNull();
+  });
+
+  it("SET_MEAL is ignored once a round is under way - its shortlist is already kept to one meal", () => {
+    for (const phase of ["submitting", "results", "mediator", "wheel", "reveal"] as const) {
+      const s = { ...initialState("laya", false), phase };
+      expect(decideReducer(s, { type: "SET_MEAL", meal: "snack" })).toBe(s);
+    }
+  });
+
+  it("survives leaving the page and coming back", () => {
+    const s = { ...initialState("laya", false), phase: "input" as const, hydrated: true, mealChoice: "supper" as const };
+    const snap = JSON.parse(JSON.stringify(snapshotOf(s, 1_000))) as SessionSnapshot;
+    const back = decideReducer(initialState("laya", false), { type: "RESTORE_SESSION", snapshot: snap, now: 2_000 });
+    expect(back.mealChoice).toBe("supper");
+  });
+
+  it("is kept even when a stale round falls back to the sealed cards, and for old snapshots without it", () => {
+    const base = { ...initialState("laya", false), phase: "input" as const, hydrated: true, mealChoice: "breakfast" as const };
+    const stale = restoreFromSnapshot({ ...snapshotOf(base, 0)!, phase: "results" }, SESSION_MAX_AGE_MS + 1);
+    expect(stale.mealChoice).toBe("breakfast");
+    const { mealChoice: _omit, ...legacy } = snapshotOf(base, 0)!;
+    void _omit;
+    expect(restoreFromSnapshot(legacy as SessionSnapshot, 0).mealChoice).toBeNull();
+  });
+
+  it("a new round (RESET) goes back to auto rather than carrying the last meal over", () => {
+    const s = { ...initialState("laya", false), phase: "reveal" as const, mealChoice: "lunch" as const };
+    expect(decideReducer(s, { type: "RESET" }).mealChoice).toBeNull();
+  });
+});
