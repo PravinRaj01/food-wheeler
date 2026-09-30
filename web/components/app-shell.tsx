@@ -51,7 +51,11 @@ export function AppShell({ children, signedIn }: { children: React.ReactNode; si
       {/* Main content - bottom padding on every breakpoint now that the
           dock floats over the page at every screen size (there's no
           desktop sidebar taking that space instead any more). */}
-      <main className="flex-1 overflow-y-auto pb-28">{children}</main>
+      {/* overflow-clip, not overflow-auto: main never scrolls (the page does),
+          but auto still made it the scroll container for everything inside,
+          so a `sticky` element in a page (History's select bar) had nothing
+          to stick to. Clip keeps the same clipping without that. */}
+      <main className="flex-1 overflow-clip pb-28">{children}</main>
 
       <Dock
         primaryItems={primaryItems}

@@ -43,11 +43,17 @@ core experience.
   something separates them ("Patio or cozy indoors?"), a "Settle it with one question" button
   appears. It's never forced.
 - **Pluggable engines.** Laya, GLiNER2.5-Decide, or a remote CLM-8B, picked in Settings. Developer
-  mode scores each round with every available engine and shows them side by side.
+  mode scores each round with every available engine and shows them side by side; tap an engine's
+  card to flip the list to *its* ranking and scores, with each place's move against the primary.
+- **It remembers where you were.** Leave Decide for another page (or reload, or let the PWA get
+  backgrounded) and you come back to the same step — the cards, the ranked list, an open
+  question, the reveal — without re-running the search or saving the decision twice. A round
+  older than six hours starts over from the sealed cards.
 - **A history you can manage.** Every decision is saved with how it was made ("Picked · #1 of 8",
   "Spun · #3 of 5"). Search places and what you asked for, filter by cuisine or Picked/Spun, star
-  favourites (pinned on top, with their own tab), delete one or clear everything, and page back
-  through older rounds. Guests' rounds are queued locally and claimed on sign-in.
+  favourites (pinned on top, with their own tab), delete one, or tick several with **Select** — with
+  Select all, and "Select all N" to reach rows beyond the first page — and delete them in one go
+  (selecting everything is how you clear history), and page back through older rounds. Guests' rounds are queued locally and claimed on sign-in.
 - **Explore, offline.** Browse nearby places on a map with local cuisine filters, switch between
   light and dark themes, and install it to your home screen.
 
@@ -191,11 +197,12 @@ Web app (`web/.env.local`, see `web/.env.example`):
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest tests/        # 191 tests: guards, ranking/question, dish & named-place shortlist, radius & location rules, same-country
+.venv/bin/python -m pytest tests/        # 193 tests: guards, ranking/question, dish & named-place shortlist, radius & location rules, same-country
                                           # filtering, the Overture bundle, OSRM routing, location-mention
                                           # extraction/geocoding, CORS, rate limit, engine manager
-cd web && npm test                       # 113 tests: decide reducer, API client, weighted wheel, history queries,
-                                          # filters & labels, sync outbox, distance formatting
+cd web && npm test                       # 138 tests: decide reducer (incl. engine view & session restore), API client,
+                                          # weighted wheel, history queries/filters/labels/selection, sync outbox,
+                                          # distance formatting
 cd web && npm run lint && npm run build
 .venv/bin/python scripts/compare_engines.py   # real engines, real latency/confidence on sample couples
 ```

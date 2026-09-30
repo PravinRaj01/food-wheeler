@@ -575,10 +575,11 @@ def _validate(body: dict):
 # nearest place, when nothing separated the leaders - and then animated a
 # wheel landing on it.
 # ---------------------------------------------------------------------------
-def build_ranked_payload(probs: dict, filtered: list[dict], round_num: int, source: str,
-                          cands: list[dict], asked_dims: set[str], engine_meta: dict, t0: float) -> dict:
-    by_id = {c["id"]: c for c in filtered}
-    ranking = sorted(
+def sorted_ranking(probs: dict, by_id: dict) -> list[dict]:
+    """One engine's scores as ranking rows, best first. Shared by the main
+    response and Dev Mode's per-engine comparison, so every engine's list is
+    ordered by exactly the same rule."""
+    return sorted(
         (
             {"id": cid, "name": by_id[cid]["name"], "probability": round(p, 4), "color": by_id[cid]["color"]}
             for cid, p in probs.items() if cid in by_id
@@ -587,6 +588,12 @@ def build_ranked_payload(probs: dict, filtered: list[dict], round_num: int, sour
         # then the cheapest - only ever an ordering, see rank_tiebreak_key.
         key=lambda r: (-r["probability"], *rank_tiebreak_key(by_id[r["id"]])),
     )
+
+
+def build_ranked_payload(probs: dict, filtered: list[dict], round_num: int, source: str,
+                          cands: list[dict], asked_dims: set[str], engine_meta: dict, t0: float) -> dict:
+    by_id = {c["id"]: c for c in filtered}
+    ranking = sorted_ranking(probs, by_id)
     if not ranking:
         raise ValueError("engine returned no usable probabilities for the given candidates")
 
@@ -642,6 +649,10 @@ def _score_secondary(engine_id: str, state: str, filtered: list[dict], exclusion
             "latency_ms": round(result.latency_ms, 1),
             "primary": False,
             "agrees": (top_id == winner_id) if winner_id else None,
+            # This engine's whole list, so Dev Mode can flip the results
+            # screen to it and show its ranking and scores instead of the
+            # primary's.
+            "ranking": sorted_ranking(result.probabilities, by_id),
         }
     except Exception as exc:  # noqa: BLE001 - Dev Mode must never break the main response
         reason = exc.reason if isinstance(exc, EngineUnavailableError) else str(exc)

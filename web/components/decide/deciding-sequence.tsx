@@ -315,7 +315,7 @@ export function DecidingSequence({
 
       {/* Status caption - only while still genuinely waiting. */}
       {phase === "branch" && (
-        <div className="relative h-5">
+        <div className="relative h-5 w-full">
           <AnimatePresence mode="popLayout">
             <motion.div
               key={stepIndex}

@@ -2,11 +2,21 @@ import { Check, X } from "lucide-react";
 import { ENGINE_ACCENTS, ENGINE_ICONS } from "@/lib/decide/engine-meta";
 import type { ComparisonEntry, EngineId } from "@/lib/decide/types";
 
-/** Dev Mode's "how would every engine have scored this" readout, styled as
- * one small card per engine instead of a monospace text dump. An engine
- * that didn't run (unavailable, timed out) is left out entirely rather than
- * shown as "n/a" - there's nothing to compare for it. */
-export function DevComparison({ comparison }: { comparison: Record<string, ComparisonEntry> }) {
+/** Dev Mode's "how would every engine have scored this" readout, one small
+ * card per engine. Each is a button: tapping it flips the list above to THAT
+ * engine's ranking and scores (tapping the primary flips back). An engine that
+ * didn't run (unavailable, timed out) is left out entirely rather than shown
+ * as "n/a" - there's nothing to compare for it. */
+export function DevComparison({
+  comparison,
+  viewing,
+  onSelect,
+}: {
+  comparison: Record<string, ComparisonEntry>;
+  /** The engine whose ranking the list is currently showing. */
+  viewing: EngineId;
+  onSelect: (id: EngineId) => void;
+}) {
   const entries = Object.entries(comparison).filter(([, c]) => !c.error) as [EngineId, ComparisonEntry][];
   if (entries.length === 0) return null;
 
@@ -16,11 +26,20 @@ export function DevComparison({ comparison }: { comparison: Record<string, Compa
         const Icon = ENGINE_ICONS[id];
         const accent = ENGINE_ACCENTS[id];
         const pct = Math.round((c.top_p ?? 0) * 100);
+        const selected = id === viewing;
         return (
-          <div
+          <button
             key={id}
-            className="rounded-xl border p-3"
-            style={{ borderColor: c.primary ? accent : "var(--line)", background: c.primary ? `color-mix(in oklab, ${accent} 10%, transparent)` : "var(--glass)" }}
+            type="button"
+            aria-pressed={selected}
+            aria-label={`Show ${id}'s ranking`}
+            onClick={() => onSelect(id)}
+            className="rounded-xl border p-3 text-left transition-colors"
+            style={{
+              borderColor: selected ? accent : "var(--line)",
+              background: selected ? `color-mix(in oklab, ${accent} 12%, transparent)` : "var(--glass)",
+              boxShadow: selected ? `0 0 0 1px ${accent}` : undefined,
+            }}
           >
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
@@ -50,7 +69,7 @@ export function DevComparison({ comparison }: { comparison: Record<string, Compa
               <span>{pct}% confidence</span>
               <span>{c.latency_ms}ms</span>
             </div>
-          </div>
+          </button>
         );
       })}
     </div>

@@ -5,8 +5,10 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { MapPin } from "lucide-react";
-import { decideReducer, initialState, canSubmit } from "@/lib/decide/machine";
+import { cn } from "@/lib/utils";
+import { decideReducer, initialState, canSubmit, viewedResponse, activeRanking } from "@/lib/decide/machine";
 import type { SessionSnapshot } from "@/lib/decide/machine";
+import { snapshotOf, withoutRound } from "@/lib/decide/machine";
 import { decide, listEngines, listPlaces, warmEngine } from "@/lib/api";
 import type { Candidate, DecideRequest, EngineId, Location } from "@/lib/decide/types";
 import { CUISINES } from "@/lib/decide/cuisines";
@@ -55,6 +57,7 @@ export default function DecidePage() {
   const [state, dispatch] = useReducer(decideReducer, undefined, () => initialState("laya", false));
   const [userId, setUserId] = useState<string | null>(null);
   const [locationPromptOpen, setLocationPromptOpen] = useState(false);
+  const [finding, setFinding] = useState(false);
   // Holds a resolved server response back from the reducer until the
   // deciding animation has actually finished playing (see DecidingSequence
   // and its onDone below) - so the wheel/mediator screen never appears a
@@ -74,13 +77,23 @@ export default function DecidePage() {
   // login. Guarded by a key so a re-render on the reveal screen can't
   // enqueue the same decision twice; picking a DIFFERENT place after going
   // back to the list is a genuinely new decision and gets its own entry.
+  // The key is in two places on purpose: the ref blocks a same-tick repeat
+  // (React StrictMode re-runs effects before the state update lands), and
+  // state.savedKey is what survives leaving the page and coming back to a
+  // restored reveal - without it that would save the decision again.
   const savedClientIdRef = useRef<string | null>(null);
+  const mountRestoreRanRef = useRef(false);
   useEffect(() => {
-    if (state.phase !== "reveal" || !state.chosen || !state.lastRanked) return;
-    const { chosen, lastRanked: m } = state;
-    const clientId = `${chosen.candidate.id}-${chosen.via}-${m.round}-${m.latency_ms}`;
-    if (savedClientIdRef.current === clientId) return;
+    const m = viewedResponse(state);
+    if (state.phase !== "reveal" || !state.chosen || !m) return;
+    const { chosen } = state;
+    // m is the VIEWED response (Dev Mode can be showing a non-primary
+    // engine's list), so the engine and runner-ups saved are the ones the
+    // pick was actually made against.
+    const clientId = `${chosen.candidate.id}-${chosen.via}-${m.engine.id}-${m.round}-${m.latency_ms}`;
+    if (savedClientIdRef.current === clientId || state.savedKey === clientId) return;
     savedClientIdRef.current = clientId;
+    dispatch({ type: "MARK_SAVED", key: clientId });
 
     enqueueDecision(userId, {
       clientId: crypto.randomUUID(),
@@ -106,22 +119,34 @@ export default function DecidePage() {
   // client render match (see lib/safe-storage.ts) and there's no hydration
   // mismatch from a value baked into the initial render.
   useEffect(() => {
+    // Once only. This effect consumes one-shot state (the Explore seed is
+    // removed from sessionStorage below), so React StrictMode's dev-only
+    // second run would see a different world - no seed - and restore the old
+    // round over the fresh one the first run just set up.
+    if (mountRestoreRanRef.current) return;
+    mountRestoreRanRef.current = true;
+
     const storedEngine = local.get("fw_engine", "laya") as EngineId;
     if (storedEngine !== "laya") dispatch({ type: "SET_ENGINE", engine: storedEngine });
     if (isDevModeEnabled()) dispatch({ type: "SET_DEV_MODE", value: true });
 
-    // Resuming an interrupted round (a reload or a backgrounded PWA
-    // reopened) takes priority over the plain names restore below, since
-    // the snapshot already carries whatever names were in play plus
-    // in-progress text - see the persistence effect further down for the
-    // write side and what "resumable" means.
+    // Resuming where the couple left off (they went to another page, the
+    // tab reloaded, or a backgrounded PWA was reopened) takes priority over
+    // the plain names restore below: the snapshot carries the names, the
+    // typed text AND however far the round had got - see the persistence
+    // effect further down for the write side, and restoreFromSnapshot() in
+    // lib/decide/machine.ts for what comes back and what falls back to input.
     const sessionRaw = session.get(SESSION_KEY, "");
+    const seeding = Boolean(session.get(SEED_KEY, ""));
     let restoredSession = false;
     if (sessionRaw) {
       try {
-        const snapshot = JSON.parse(sessionRaw) as SessionSnapshot;
-        if (snapshot && (snapshot.phase === "names" || snapshot.phase === "input")) {
-          dispatch({ type: "RESTORE_SESSION", snapshot });
+        let snapshot = JSON.parse(sessionRaw) as SessionSnapshot;
+        // A place just added from Explore starts a new round - it must not
+        // land on top of a finished list from before.
+        if (snapshot && seeding) snapshot = withoutRound(snapshot);
+        if (snapshot && typeof snapshot.phase === "string") {
+          dispatch({ type: "RESTORE_SESSION", snapshot, now: Date.now() });
           restoredSession = true;
         }
       } catch {
@@ -182,11 +207,11 @@ export default function DecidePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep an in-progress round alive across a reload or the PWA being
-  // backgrounded and killed - only while it's actually resumable (names or
-  // input; wheel/mediator/reveal all depend on a live server response that
-  // was never persisted, so there's nothing safe to restore into once past
-  // input).
+  // Keep the round alive across leaving this page, a reload, or the PWA being
+  // backgrounded and killed: every step is saved - the cards, the ranked list,
+  // an open question, the reveal - and restored on the next visit (see
+  // restoreFromSnapshot). Only a request in flight isn't (snapshotOf returns
+  // null then and the previous snapshot stays).
   //
   // Gated on `state.hydrated`, not just checked inline: without it, this
   // effect's very first run (before the mount-restore effect's dispatch
@@ -198,40 +223,9 @@ export default function DecidePage() {
   // how these two effects happen to interleave.
   useEffect(() => {
     if (!state.hydrated) return;
-    if (state.phase !== "names" && state.phase !== "input") return;
-    const snapshot: SessionSnapshot = {
-      phase: state.phase,
-      p1Name: state.p1Name,
-      p2Name: state.p2Name,
-      p1Text: state.p1Text,
-      p1Mode: state.p1Mode,
-      p1Sealed: state.p1Sealed,
-      p2Text: state.p2Text,
-      p2Mode: state.p2Mode,
-      p2Sealed: state.p2Sealed,
-      radiusKm: state.radiusKm,
-    };
-    session.set(SESSION_KEY, JSON.stringify(snapshot));
-  }, [
-    state.hydrated,
-    state.phase,
-    state.p1Name,
-    state.p2Name,
-    state.p1Text,
-    state.p1Mode,
-    state.p1Sealed,
-    state.p2Text,
-    state.p2Mode,
-    state.p2Sealed,
-    state.radiusKm,
-  ]);
-
-  // Reaching reveal means the round is done - clear the snapshot so
-  // reopening the app later starts fresh instead of resuming a completed
-  // round's half-finished-looking leftovers.
-  useEffect(() => {
-    if (state.phase === "reveal") session.set(SESSION_KEY, "");
-  }, [state.phase]);
+    const snapshot = snapshotOf(state, Date.now());
+    if (snapshot) session.set(SESSION_KEY, JSON.stringify(snapshot));
+  }, [state]);
 
   // Warm the backend's Overpass cache while the couple is still typing, so
   // by the time they tap "Find Our Table" the real fetch (the slow part -
@@ -341,11 +335,18 @@ export default function DecidePage() {
       setLocationPromptOpen(true);
       return;
     }
-    const fresh = await loc.ensureLocation();
-    if (fresh) {
-      submit({ location: fresh });
-    } else {
-      toast("Couldn't get your location - check your browser's permission for this site and try again.");
+    // Locating can take a moment; without this the button just sat there
+    // looking untouched until the animation began.
+    setFinding(true);
+    try {
+      const fresh = await loc.ensureLocation();
+      if (fresh) {
+        submit({ location: fresh });
+      } else {
+        toast("Couldn't get your location - check your browser's permission for this site and try again.");
+      }
+    } finally {
+      setFinding(false);
     }
   };
 
@@ -362,6 +363,10 @@ export default function DecidePage() {
   }, []);
 
   const resetGame = () => dispatch({ type: "RESET" });
+
+  // What the results/wheel/reveal screens show: the primary engine's answer,
+  // or in Dev Mode whichever engine's ranking was selected on the list.
+  const view = viewedResponse(state);
 
   return (
     // LayoutGroup, not just AnimatePresence: the shared-layout morph spans
@@ -387,15 +392,25 @@ export default function DecidePage() {
           {loc.status === "granted" ? "Near you" : loc.status === "locating" ? "Locating…" : "Location off"}
         </Link>
 
-        {state.phase === "input" && (
-          <div className="mt-4">
-            <RadiusSlider
-              km={state.radiusKm}
-              locked={state.engineLocked}
-              onChange={(km) => dispatch({ type: "SET_RADIUS_KM", km })}
-            />
-          </div>
-        )}
+        {/* Collapses instead of vanishing, so the content below eases up
+            rather than jumping when Find Our Table is tapped. */}
+        <AnimatePresence initial={false}>
+          {state.phase === "input" && (
+            <motion.div
+              key="radius"
+              className="mt-4 overflow-hidden"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0, marginTop: 0, transition: { duration: 0.2 } }}
+            >
+              <RadiusSlider
+                km={state.radiusKm}
+                locked={state.engineLocked}
+                onChange={(km) => dispatch({ type: "SET_RADIUS_KM", km })}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </header>
 
       {/* popLayout, not wait: "wait" fully unmounts the input phase before
@@ -453,14 +468,28 @@ export default function DecidePage() {
 
             {canSubmit(state) && (
               <>
-                <button
+                {/* A motion.button with its own quick exit: this whole block
+                    stays mounted (frozen in place by popLayout) until the
+                    cards have morphed into DecidingSequence's pills, so
+                    without this the button sat on top of the new screen for
+                    ~half a second. Only the button fades - fading the parent
+                    would fade the morphing cards with it. */}
+                <motion.button
                   type="button"
-                  disabled={!isOnline}
+                  disabled={!isOnline || finding}
                   onClick={findTable}
-                  className="w-full rounded-xl bg-ember py-3 text-base font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-35"
+                  exit={{ opacity: 0, transition: { duration: 0.1 } }}
+                  /* No CSS opacity transition/disabled:opacity here - either one
+                     fights the inline opacity of the exit animation above and
+                     made the button flicker back in mid-fade. */
+                  className={cn(
+                    "w-full rounded-xl bg-ember py-3 text-base font-medium text-ink",
+                    !isOnline && "cursor-not-allowed opacity-35",
+                    finding && "cursor-wait",
+                  )}
                 >
-                  Find Our Table
-                </button>
+                  {finding ? "Finding…" : "Find Our Table"}
+                </motion.button>
                 {!isOnline && (
                   <p className="text-center text-xs text-cream/40">You&apos;re offline - reconnect to ask your third wheel.</p>
                 )}
@@ -481,18 +510,20 @@ export default function DecidePage() {
           />
         )}
 
-        {state.phase === "results" && state.lastRanked && (
+        {state.phase === "results" && state.lastRanked && view && (
           <div key="results">
             <ResultsList
-              response={state.lastRanked}
+              response={view}
               p1Name={state.p1Name}
               p2Name={state.p2Name}
               devMode={state.devMode}
+              primary={{ id: state.lastRanked.engine.id, label: state.lastRanked.engine.label, ranking: state.lastRanked.ranking }}
+              onViewEngine={(engine) => dispatch({ type: "VIEW_ENGINE", engine })}
               onPick={(id) => dispatch({ type: "PICK", id })}
               onSpin={() => {
                 // Drawn ONCE, here, before the wheel mounts - the wheel only
                 // animates to it, so the slice sizes it shows are the real odds.
-                const slices = topWeights(state.lastRanked!.ranking);
+                const slices = topWeights(activeRanking(state));
                 dispatch({ type: "START_SPIN", winnerId: pickWeighted(slices) });
               }}
               onOpenQuestion={() => dispatch({ type: "OPEN_QUESTION" })}
@@ -500,12 +531,12 @@ export default function DecidePage() {
           </div>
         )}
 
-        {state.phase === "wheel" && state.lastRanked && state.spinWinnerId && (
+        {state.phase === "wheel" && view && state.spinWinnerId && (
           <div key="wheel" className="py-8">
             <Wheel
-              slices={topWeights(state.lastRanked.ranking)}
+              slices={topWeights(view.ranking)}
               winnerId={state.spinWinnerId}
-              engineLabel={state.lastRanked.engine.label}
+              engineLabel={view.engine.label}
               onLanded={() => dispatch({ type: "WHEEL_LANDED" })}
             />
           </div>
@@ -537,11 +568,11 @@ export default function DecidePage() {
           />
         )}
 
-        {state.phase === "reveal" && state.chosen && state.lastRanked && (
+        {state.phase === "reveal" && state.chosen && view && (
           <RevealPanel
             key="reveal"
             choice={state.chosen}
-            response={state.lastRanked}
+            response={view}
             p1Name={state.p1Name}
             p2Name={state.p2Name}
             p1Text={state.p1Text}

@@ -67,6 +67,9 @@ export interface ComparisonEntry {
   latency_ms?: number;
   primary?: boolean;
   agrees?: boolean | null;
+  /** This engine's own full ranking (secondary engines only - the primary's
+   * is the response's `ranking`). Lets Dev Mode flip the results list to it. */
+  ranking?: RankingRow[];
   error?: "ENGINE_UNAVAILABLE";
   reason?: string;
 }

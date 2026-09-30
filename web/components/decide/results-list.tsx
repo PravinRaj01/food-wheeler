@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Dices, MessageCircleQuestion } from "lucide-react";
-import type { Candidate, RankedResponse } from "@/lib/decide/types";
+import type { Candidate, EngineId, RankedResponse, RankingRow } from "@/lib/decide/types";
 import { formatDistance } from "@/lib/decide/distance";
 import { SHORTLIST_SIZE } from "@/lib/decide/weighted";
 import { cn } from "@/lib/utils";
@@ -17,19 +17,39 @@ import { DirectionsButton } from "@/components/decide/directions-button";
  * "bad match" when shown raw. The raw score lives in the expanded detail.
  * From here the couple can pick a place, spin (weighted by these same
  * scores), or - when the top two are close - settle it with one question. */
+/** How far a place moved against the primary engine's list, Dev Mode only. */
+function RankShift({ from, to, label }: { from: number | undefined; to: number; label: string }) {
+  if (from === undefined || from === to) return null;
+  const up = from > to; // was further down the primary's list
+  return (
+    <span className={cn("shrink-0 text-[10px] tabular-nums", up ? "text-teal-400" : "text-cream/40")}>
+      {up ? "▲" : "▼"}
+      {Math.abs(from - to)} vs {label}
+    </span>
+  );
+}
+
 export function ResultsList({
   response,
   p1Name,
   p2Name,
   devMode,
+  primary,
+  onViewEngine,
   onPick,
   onSpin,
   onOpenQuestion,
 }: {
+  /** What to show - the primary engine's answer, or in Dev Mode whichever
+   * engine's ranking is selected (see viewedResponse in lib/decide/machine.ts). */
   response: RankedResponse;
   p1Name: string;
   p2Name: string;
   devMode: boolean;
+  /** The primary engine's own ranking, so a switched view can show how far
+   * each place moved against it. */
+  primary: { id: EngineId; label: string; ranking: RankingRow[] };
+  onViewEngine: (id: EngineId) => void;
   onPick: (id: string) => void;
   onSpin: () => void;
   onOpenQuestion: () => void;
@@ -38,6 +58,8 @@ export function ResultsList({
   const rows = response.ranking.slice(0, SHORTLIST_SIZE);
   const byId = new Map<string, Candidate>(response.candidates.map((c) => [c.id, c]));
   const topP = rows[0]?.probability || 1;
+  const viewingOther = response.engine.id !== primary.id;
+  const primaryIndex = new Map(primary.ranking.map((r, i) => [r.id, i]));
   const centre = response.search_center;
   const centreOwner = centre
     ? (centre.mentioned_by === "p2" ? p2Name : p1Name) || (centre.mentioned_by === "p2" ? "Partner Two" : "Partner One")
@@ -81,6 +103,7 @@ export function ResultsList({
                   {i === 0 && (
                     <span className="shrink-0 text-[10px] tracking-wide text-ember uppercase">Top pick</span>
                   )}
+                  {i !== 0 && viewingOther && <RankShift from={primaryIndex.get(row.id)} to={i} label={primary.label} />}
                 </div>
                 <p className="mt-0.5 text-xs text-cream/50">
                   {c.cuisine} · {c.price} · {formatDistance(c)}
@@ -111,8 +134,8 @@ export function ResultsList({
                   >
                     <div className="px-3 pb-3">
                       <p className="text-xs text-cream/60">
-                        Model score {Math.round(row.probability * 100)}% — the engine splits 100% across all{" "}
-                        {response.ranking.length} places it weighed, so this is a share, not a grade.
+                        {response.engine.label} score {Math.round(row.probability * 100)}% — the engine splits 100%
+                        across all {response.ranking.length} places it weighed, so this is a share, not a grade.
                       </p>
                       {c.address && c.address !== "Nearby" && <p className="mt-1 text-xs text-cream/50">{c.address}</p>}
                       {c.tags.length > 0 && (
@@ -145,7 +168,7 @@ export function ResultsList({
 
       {devMode && response.comparison && (
         <div className="mt-4">
-          <DevComparison comparison={response.comparison} />
+          <DevComparison comparison={response.comparison} viewing={response.engine.id} onSelect={onViewEngine} />
         </div>
       )}
 

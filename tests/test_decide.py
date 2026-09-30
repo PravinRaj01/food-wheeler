@@ -720,6 +720,31 @@ def test_dev_mode_includes_comparison(client, fake_manager):
     assert comparison["engine_b"]["agrees"] is False  # winner is "a", engine_b's top is "b"
 
 
+def test_dev_mode_secondary_engine_carries_its_own_full_ranking(client, fake_manager):
+    _, engine_a, engine_b = fake_manager
+    engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}
+    engine_b._probabilities = {"a": 0.20, "b": 0.70, "c": 0.10}
+    data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, dev_mode=True).get_json()
+
+    other = data["comparison"]["engine_b"]["ranking"]
+    # Same row shape as the main ranking, ordered by THIS engine's scores.
+    assert [r["id"] for r in other] == ["b", "a", "c"]
+    assert [r["probability"] for r in other] == [0.7, 0.2, 0.1]
+    assert set(other[0]) == set(data["ranking"][0])
+    # ...while the main ranking is still the primary's.
+    assert [r["id"] for r in data["ranking"]][0] == "a"
+
+
+def test_dev_mode_secondary_ranking_breaks_ties_like_the_main_one(client, fake_manager):
+    # b and c are tied for engine_b - they must come out in the same order the
+    # main ranking would put them (nearest drive first), not arbitrary dict order.
+    _, engine_a, engine_b = fake_manager
+    engine_a._probabilities = {"a": 0.5, "b": 0.25, "c": 0.25}
+    engine_b._probabilities = {"a": 0.5, "b": 0.25, "c": 0.25}
+    data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, dev_mode=True).get_json()
+    assert [r["id"] for r in data["comparison"]["engine_b"]["ranking"]] == [r["id"] for r in data["ranking"]]
+
+
 def test_dev_mode_secondary_failure_does_not_break_response(client, fake_manager):
     _, engine_a, engine_b = fake_manager
     engine_a._probabilities = {"a": 0.80, "b": 0.10, "c": 0.10}

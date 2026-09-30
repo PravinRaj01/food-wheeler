@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { canSubmit, decideReducer, initialState } from "./machine";
+import {
+  SESSION_MAX_AGE_MS,
+  activeRanking,
+  canSubmit,
+  decideReducer,
+  initialState,
+  restoreFromSnapshot,
+  snapshotOf,
+  viewedResponse,
+  withoutRound,
+} from "./machine";
+import type { SessionSnapshot } from "./machine";
 import type { Candidate, RankedResponse, TiebreakerResponse } from "./types";
 
 const candidate = (id: string, overrides: Partial<Candidate> = {}): Candidate => ({
@@ -414,6 +425,7 @@ describe("decideReducer", () => {
         p2Sealed: false,
         radiusKm: 5,
       },
+      now: 0,
     });
     expect(s.phase).toBe("input");
     expect(s.p1Name).toBe("Alex");
@@ -468,5 +480,210 @@ describe("decideReducer", () => {
     const s = initialState("laya", false);
     // @ts-expect-error - deliberately invalid action for the default branch
     expect(decideReducer(s, { type: "NOT_REAL" })).toBe(s);
+  });
+});
+
+describe("Dev Mode engine view", () => {
+  // Laya (primary) ranks a > b > c; GLiNER reverses it. GLiNER's entry has its
+  // own full ranking - that is what VIEW_ENGINE flips the list to.
+  const glinerRanking = [
+    { id: "c", name: "c", probability: 0.6, color: "#fff" },
+    { id: "b", name: "b", probability: 0.3, color: "#fff" },
+    { id: "a", name: "a", probability: 0.1, color: "#fff" },
+  ];
+  const devState = () =>
+    withRanked({
+      comparison: {
+        laya: { top_id: "a", top_p: 0.4, latency_ms: 100, primary: true, agrees: true },
+        gliner: { top_id: "c", top_p: 0.6, latency_ms: 4000, primary: false, agrees: false, ranking: glinerRanking },
+        clm_8b: { error: "ENGINE_UNAVAILABLE" },
+      },
+      question,
+    } as Partial<RankedResponse>);
+
+  it("shows the primary's ranking until another engine is selected", () => {
+    const s = devState();
+    expect(viewedResponse(s)).toBe(s.lastRanked);
+    expect(activeRanking(s).map((r) => r.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("VIEW_ENGINE flips the viewed ranking, label and id to that engine's - and drops the primary's question", () => {
+    const s = decideReducer(devState(), { type: "VIEW_ENGINE", engine: "gliner" });
+    const v = viewedResponse(s)!;
+    expect(v.ranking.map((r) => r.id)).toEqual(["c", "b", "a"]);
+    expect(v.engine.id).toBe("gliner");
+    expect(v.engine.label).toBe("GLiNER");
+    expect(v.question).toBeNull(); // built from the primary's top two
+    expect(s.lastRanked!.ranking[0].id).toBe("a"); // the primary's answer itself is untouched
+  });
+
+  it("selecting the primary again returns to it", () => {
+    const flipped = decideReducer(devState(), { type: "VIEW_ENGINE", engine: "gliner" });
+    const back = decideReducer(flipped, { type: "VIEW_ENGINE", engine: "laya" });
+    expect(back.viewEngine).toBeNull();
+    expect(viewedResponse(back)).toBe(back.lastRanked);
+    expect(viewedResponse(back)!.question).not.toBeNull();
+  });
+
+  it("ignores an engine with no ranking (unavailable or never ran)", () => {
+    const s = devState();
+    expect(decideReducer(s, { type: "VIEW_ENGINE", engine: "clm_8b" })).toBe(s);
+  });
+
+  it("ignores VIEW_ENGINE outside the list", () => {
+    const s = { ...devState(), phase: "reveal" as const };
+    expect(decideReducer(s, { type: "VIEW_ENGINE", engine: "gliner" })).toBe(s);
+  });
+
+  it("PICK records the viewed engine's score, rank and list size", () => {
+    const s = decideReducer(devState(), { type: "VIEW_ENGINE", engine: "gliner" });
+    const picked = decideReducer(s, { type: "PICK", id: "c" });
+    expect(picked.chosen).toMatchObject({ rank: 1, probability: 0.6, total: 3, via: "picked" });
+    // The same place was #3 in the primary's list - the view decides.
+    const primaryPick = decideReducer(devState(), { type: "PICK", id: "c" });
+    expect(primaryPick.chosen).toMatchObject({ rank: 3, probability: 0.1 });
+  });
+
+  it("the view survives going to the reveal and back, and resets on the next result", () => {
+    let s = decideReducer(devState(), { type: "VIEW_ENGINE", engine: "gliner" });
+    s = decideReducer(s, { type: "PICK", id: "b" });
+    s = decideReducer(s, { type: "BACK_TO_RESULTS" });
+    expect(s.viewEngine).toBe("gliner");
+    s = decideReducer(s, { type: "SUBMIT_RANKED", response: rankedResponse() });
+    expect(s.viewEngine).toBeNull();
+  });
+});
+
+describe("session persistence", () => {
+  const NOW = 1_000_000_000_000;
+  const cards = {
+    p1Name: "Alex",
+    p2Name: "Sam",
+    p1Text: "spicy",
+    p1Mode: "typed" as const,
+    p1Sealed: true,
+    p2Text: "anything",
+    p2Mode: "typed" as const,
+    p2Sealed: true,
+    radiusKm: 5,
+  };
+  const played = (phase: "results" | "mediator" | "wheel" | "reveal") => {
+    const ranked = rankedResponse({ question, round: 1 });
+    return {
+      ...initialState("laya", false),
+      ...cards,
+      hydrated: true,
+      phase,
+      engineLocked: true,
+      lastRanked: ranked,
+      candidates: ranked.candidates,
+      source: "osm" as const,
+      round: 1,
+      tiebreakers: [{ question_id: "setting", answer: "patio", text: "Outdoor" }],
+      mediator: phase === "mediator" ? { question, kind: "close" as const, round: 1, engineLabel: "Laya" } : null,
+      chosen:
+        phase === "reveal"
+          ? { candidate: candidate("b"), probability: 0.3, rank: 2, total: 3, via: "picked" as const }
+          : null,
+      spinWinnerId: phase === "wheel" ? "b" : null,
+      savedKey: phase === "reveal" ? "b-picked-laya-1-100" : null,
+    };
+  };
+  const roundTrip = (state: ReturnType<typeof played>, later = 60_000) => {
+    // Through JSON, as sessionStorage would.
+    const snap = JSON.parse(JSON.stringify(snapshotOf(state, NOW))) as SessionSnapshot;
+    return decideReducer(initialState("laya", false), { type: "RESTORE_SESSION", snapshot: snap, now: NOW + later });
+  };
+
+  it("writes nothing while a request is in flight, so the previous snapshot stands", () => {
+    expect(snapshotOf({ ...played("results"), phase: "submitting" }, NOW)).toBeNull();
+  });
+
+  it("restores the ranked list exactly, with the round it was on", () => {
+    const s = roundTrip(played("results"));
+    expect(s.phase).toBe("results");
+    expect(s.lastRanked!.ranking.map((r) => r.id)).toEqual(["a", "b", "c"]);
+    expect(s.round).toBe(1);
+    expect(s.tiebreakers).toHaveLength(1);
+    expect(s.engineLocked).toBe(true);
+    expect(s.candidates).toHaveLength(3);
+    expect(s.hydrated).toBe(true);
+  });
+
+  it("restores an open question", () => {
+    const s = roundTrip(played("mediator"));
+    expect(s.phase).toBe("mediator");
+    expect(s.mediator).toMatchObject({ kind: "close", round: 1 });
+    expect(s.lastRanked).not.toBeNull();
+  });
+
+  it("restores the reveal with its choice and its saved-key, so it isn't saved to History twice", () => {
+    const s = roundTrip(played("reveal"));
+    expect(s.phase).toBe("reveal");
+    expect(s.chosen).toMatchObject({ rank: 2, via: "picked" });
+    expect(s.savedKey).toBe("b-picked-laya-1-100");
+  });
+
+  it("brings a mid-spin wheel back to its list rather than replaying the animation", () => {
+    const s = roundTrip(played("wheel"));
+    expect(s.phase).toBe("results");
+    expect(s.spinWinnerId).toBeNull();
+    expect(s.chosen).toBeNull();
+  });
+
+  it("keeps the engine view a Dev Mode user had selected", () => {
+    const s = roundTrip({ ...played("results"), viewEngine: "gliner" });
+    expect(s.viewEngine).toBe("gliner");
+  });
+
+  it("a round older than the age limit falls back to the sealed cards, keeping their text", () => {
+    const s = roundTrip(played("results"), SESSION_MAX_AGE_MS + 1);
+    expect(s.phase).toBe("input");
+    expect(s.p1Text).toBe("spicy");
+    expect(s.p1Sealed).toBe(true);
+    expect(s.lastRanked).toBeNull();
+    expect(s.round).toBe(0);
+    expect(s.tiebreakers).toEqual([]);
+    expect(s.engineLocked).toBe(false);
+  });
+
+  it("a snapshot missing what its phase needs falls back to input instead of a blank screen", () => {
+    const noList = { ...snapshotOf(played("results"), NOW)!, lastRanked: null };
+    expect(restoreFromSnapshot(noList, NOW).phase).toBe("input");
+    const noChoice = { ...snapshotOf(played("reveal"), NOW)!, chosen: null };
+    expect(restoreFromSnapshot(noChoice, NOW).phase).toBe("input");
+    const noQuestion = { ...snapshotOf(played("mediator"), NOW)!, mediator: null };
+    expect(restoreFromSnapshot(noQuestion, NOW).phase).toBe("input");
+    const garbled = { ...snapshotOf(played("results"), NOW)!, lastRanked: { nope: true } as never };
+    expect(restoreFromSnapshot(garbled, NOW).phase).toBe("input");
+  });
+
+  it("a snapshot written before rounds were persisted still restores its cards", () => {
+    const old: SessionSnapshot = { ...cards, phase: "input" };
+    const s = restoreFromSnapshot(old, NOW);
+    expect(s.phase).toBe("input");
+    expect(s.p1Text).toBe("spicy");
+    expect(s.lastRanked).toBeNull();
+  });
+
+  it("names-phase snapshots stay on names", () => {
+    const s = restoreFromSnapshot({ ...cards, phase: "names", savedAt: NOW }, NOW);
+    expect(s.phase).toBe("names");
+  });
+
+  it("withoutRound drops the round (for a fresh Explore handoff) but keeps the cards", () => {
+    const snap = withoutRound(snapshotOf(played("reveal"), NOW)!);
+    const s = restoreFromSnapshot(snap, NOW);
+    expect(s.phase).toBe("input");
+    expect(s.p1Text).toBe("spicy");
+    expect(s.lastRanked).toBeNull();
+    expect(s.chosen).toBeNull();
+    expect(s.candidates).toBeNull(); // none restored - the seeding handoff sets them next
+  });
+
+  it("MARK_SAVED records the key, and RESET clears it for the next round", () => {
+    const s = decideReducer(played("reveal"), { type: "MARK_SAVED", key: "k" });
+    expect(s.savedKey).toBe("k");
+    expect(decideReducer(s, { type: "RESET" }).savedKey).toBeNull();
   });
 });

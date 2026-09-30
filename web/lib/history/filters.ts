@@ -68,3 +68,7 @@ export const historyQuerySchema = z.object({
   cursor: z.string().max(200).nullable(),
 });
 export type HistoryQuery = z.infer<typeof historyQuerySchema>;
+
+/** What "delete everything matching" accepts: the view's filters, no paging. */
+export const historyMatchSchema = historyQuerySchema.pick({ q: true, cuisine: true, via: true, favouritesOnly: true });
+export type HistoryMatch = z.infer<typeof historyMatchSchema>;

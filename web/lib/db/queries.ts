@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, inArray, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "./client";
 import { decisions, preferences } from "./schema";
 import type { DecisionPayload } from "@/lib/validation/decision";
@@ -106,11 +106,12 @@ export function toHistoryRow(row: typeof decisions.$inferSelect): HistoryRow {
   };
 }
 
-/** One page of the caller's own decisions, newest first. Every condition is
+/** Everything that narrows the caller's history to what the UI is showing -
+ * shared by paging, counting and delete-by-filter, so "what I see", "how many
+ * there are" and "what gets deleted" can never drift apart. Every condition is
  * ANDed onto user_id = the verified session user, so no filter combination
- * can ever reach another user's rows. */
-export async function listDecisionsForUser(db: Db, userId: string, opts: ListOptions = {}): Promise<HistoryPage> {
-  const limit = opts.limit ?? HISTORY_PAGE_SIZE;
+ * can ever reach another user's rows. (The cursor is paging only, not here.) */
+function filterConditions(userId: string, opts: ListOptions): (SQL | undefined)[] {
   const conditions: (SQL | undefined)[] = [
     eq(decisions.userId, userId),
     // Demo-era rows (source "mock") are stale test data from before
@@ -138,6 +139,13 @@ export async function listDecisionsForUser(db: Db, userId: string, opts: ListOpt
   if (needles?.length) {
     conditions.push(or(...needles.map((n) => ilike(sql`${decisions.winner}->>'cuisine'`, `%${escapeLike(n)}%`))));
   }
+  return conditions;
+}
+
+/** One page of the caller's own decisions, newest first. */
+export async function listDecisionsForUser(db: Db, userId: string, opts: ListOptions = {}): Promise<HistoryPage> {
+  const limit = opts.limit ?? HISTORY_PAGE_SIZE;
+  const conditions = filterConditions(userId, opts);
 
   const cursor = opts.cursor ? decodeCursor(opts.cursor) : null;
   if (cursor) {
@@ -161,6 +169,12 @@ export async function listDecisionsForUser(db: Db, userId: string, opts: ListOpt
     rows: page.map(toHistoryRow),
     nextCursor: rows.length > limit ? encodeCursor(page[page.length - 1]) : null,
   };
+}
+
+/** How many decisions match - what "select all N" refers to. */
+export async function countDecisionsForUser(db: Db, userId: string, opts: ListOptions = {}): Promise<number> {
+  const [row] = await db.select({ n: count() }).from(decisions).where(and(...filterConditions(userId, opts)));
+  return row?.n ?? 0;
 }
 
 export async function getDecisionForUser(db: Db, userId: string, id: string) {
@@ -189,6 +203,30 @@ export async function setFavourite(db: Db, userId: string, id: string, favourite
     .where(and(eq(decisions.userId, userId), eq(decisions.id, id)))
     .returning({ id: decisions.id });
   return updated.length > 0;
+}
+
+/** Several of the caller's own rows at once. Ids that aren't theirs (or don't
+ * exist) match nothing and simply aren't counted. */
+export async function deleteDecisionsForUser(db: Db, userId: string, ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const gone = await db
+    .delete(decisions)
+    .where(and(eq(decisions.userId, userId), inArray(decisions.id, ids)))
+    .returning({ id: decisions.id });
+  return gone.length;
+}
+
+/** Deletes everything matching the view - the "select all N matching" case,
+ * which reaches rows the page never loaded. With nothing narrowing it, that is
+ * the whole history (stale demo rows included, which the list hides). A
+ * cuisine label that isn't a known one deletes NOTHING: the list treats it as
+ * "no filter", which for a destructive call would mean everything. */
+export async function deleteMatchingForUser(db: Db, userId: string, opts: ListOptions = {}): Promise<number> {
+  if (opts.cuisine && !CUISINES.some((c) => c.label === opts.cuisine)) return 0;
+  const unfiltered = !opts.q?.trim() && !opts.cuisine && !opts.via && !opts.favouritesOnly;
+  const where = unfiltered ? eq(decisions.userId, userId) : and(...filterConditions(userId, opts));
+  const gone = await db.delete(decisions).where(where).returning({ id: decisions.id });
+  return gone.length;
 }
 
 export async function deleteAllDecisionsForUser(db: Db, userId: string) {

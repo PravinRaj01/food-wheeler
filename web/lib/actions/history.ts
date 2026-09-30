@@ -5,7 +5,7 @@ import { z } from "zod";
 import { getDb } from "@/lib/db/client";
 import * as q from "@/lib/db/queries";
 import { getUserIdOrNull } from "@/lib/auth/session";
-import { historyQuerySchema, type HistoryRow } from "@/lib/history/filters";
+import { historyMatchSchema, historyQuerySchema, type HistoryRow } from "@/lib/history/filters";
 
 // Server actions are reachable by any direct POST, not just the History UI,
 // so every one re-checks the session and re-validates its own input. The
@@ -14,6 +14,7 @@ import { historyQuerySchema, type HistoryRow } from "@/lib/history/filters";
 // else simply matches nothing.
 
 export type ActionResult = { status: "unauthorized" } | { status: "ok"; changed: boolean };
+export type DeleteManyResult = { status: "unauthorized" } | { status: "ok"; deleted: number };
 export type MoreResult =
   | { status: "unauthorized" }
   | { status: "ok"; rows: HistoryRow[]; nextCursor: string | null };
@@ -51,10 +52,24 @@ export async function toggleFavourite(id: string, favourite: boolean): Promise<A
   return { status: "ok", changed };
 }
 
-export async function clearHistory(): Promise<ActionResult> {
+/** Delete the ticked rows. Capped so one POST can't ask for an absurd list;
+ * "everything" goes through deleteMatching instead. */
+export async function deleteDecisions(ids: unknown): Promise<DeleteManyResult> {
   const userId = await getUserIdOrNull();
   if (!userId) return { status: "unauthorized" };
-  await q.deleteAllDecisionsForUser(getDb(), userId);
+  const parsed = z.array(idSchema).min(1).max(500).parse(ids);
+  const deleted = await q.deleteDecisionsForUser(getDb(), userId, parsed);
   revalidatePath("/history");
-  return { status: "ok", changed: true };
+  return { status: "ok", deleted };
+}
+
+/** Delete everything matching the view's filters - "select all N", including
+ * rows the page never loaded. No filters at all is clear-history. */
+export async function deleteMatching(input: unknown): Promise<DeleteManyResult> {
+  const userId = await getUserIdOrNull();
+  if (!userId) return { status: "unauthorized" };
+  const match = historyMatchSchema.parse(input);
+  const deleted = await q.deleteMatchingForUser(getDb(), userId, match);
+  revalidatePath("/history");
+  return { status: "ok", deleted };
 }
