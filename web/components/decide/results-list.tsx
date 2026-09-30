@@ -10,6 +10,7 @@ import { SHORTLIST_SIZE } from "@/lib/decide/weighted";
 import { cn } from "@/lib/utils";
 import { DevComparison } from "@/components/decide/dev-comparison";
 import { DirectionsButton } from "@/components/decide/directions-button";
+import { HoursLink } from "@/components/decide/hours-link";
 
 /** The ranked answer - the engine's real opinion, best first, instead of a
  * pre-picked winner. Each row's bar is RELATIVE to the top pick (the #1 place
@@ -168,6 +169,7 @@ export function ResultsList({
                           <Check className="h-4 w-4" /> Let&apos;s go here
                         </button>
                       </div>
+                      <HoursLink place={c} className="mt-2.5 text-center" />
                     </div>
                   </motion.div>
                 )}

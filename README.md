@@ -11,9 +11,10 @@ core experience.
 ## What it does
 
 - **Two sealed cards, one phone.** Each partner taps their card, types or dictates what they want
-  (or taps chips like Malay, Spicy, Budget, Halal), and seals it. Sealed answers stay hidden, so
-  whoever goes second can't just agree. Either partner can go first, and "Anything's fine" is a
-  valid answer.
+  (or taps a suggestion chip — Malay, Spicy, Budget, Halal, Chicken…; the chips fold behind a
+  "Suggestions" toggle that remembers whether you like it open), and seals it. Sealed answers stay
+  hidden, so whoever goes second can't just agree. Either partner can go first, and "Anything's
+  fine" is a valid answer.
 - **Real places inside a real radius — by road, not as the crow flies.** In Malaysia and Singapore,
   restaurants come from a bundled offline [Overture Maps](https://overturemaps.org) snapshot (no
   network call, no rate limits); everywhere else it falls back to OpenStreetMap's Overpass API.
@@ -29,9 +30,27 @@ core experience.
   common spelling), and places you mention by name ("7 Spice", "Agneey's", "23 Cafe") are pinned
   into the shortlist even past the road-distance cut. With a stated preference, the shortlist is the
   nearest matching places — not a random sample across the radius.
+- **It knows what meal it is.** A "Looking for: Lunch" chip starts from the phone's clock, is
+  overridden by words you type ("dinner", "something sweet", "brekkie"), and can be set by hand;
+  the round says what it assumed ("For lunch · by the time of day"). At lunch or dinner the
+  shortlist is real meals only — no ice-cream or waffle shop taking a slot just because it's
+  close; breakfast leans to kopitiams, cafes and brunch places; "snack" goes the other way; at
+  supper, places that usually trade late (a mamak, "24 Jam") go first. A place you name is always
+  kept. The chip only shows what your typed words imply once *both* answers are sealed, so it
+  never gives away the first partner's answer. The place data has no opening hours, so this picks
+  the right *kind* of place, not one that's guaranteed open — each place carries a "check opening
+  hours" link that opens its own Google Maps card.
+- **"Must have chicken" is a rule, not a hint.** A demand ("must have", "has to be", "need") for a
+  food — chicken, seafood, beef, noodles, rice, pizza and more, Malay words included — drops places
+  that can't serve it (dessert and drinks shops, vegetarian places for meat, halal for pork) and
+  gives places that clearly do (a chicken-restaurant category, "Ayam" in the name) first claim on
+  the shortlist. Place data can't say what's on a menu, so when nothing shows a sign the round
+  says so — "Nothing nearby clearly serves satay" — instead of quietly ignoring the demand. A plain
+  mention ("chicken biryani") stays a soft hint.
 - **Hard rules before any AI.** Budgets ("under RM30", "cheap", "treat ourselves"), exclusions
   ("no seafood") and diets (halal, vegetarian, vegan) are applied deterministically in `app.py`
-  before a model ever scores anything, so a model can't talk its way past "no burgers".
+  before a model ever scores anything, so a model can't talk its way past "no burgers" — and the
+  meal and must-have rules above work the same way, in plain code (`meals.py`, `musts.py`).
 - **A ranked list first.** You get the top five, best first. Bars show strength relative to the
   top pick, and the raw model score appears only when you open a row — so a good match in a crowd
   of eight never reads as a bad "19%". Tap "Let's go here" on any row to choose it.
@@ -55,7 +74,8 @@ core experience.
   "Spun · #3 of 5"). Search places and what you asked for, filter by cuisine or Picked/Spun, star
   favourites (pinned on top, with their own tab), delete one, or tick several with **Select** — with
   Select all, and "Select all N" to reach rows beyond the first page — and delete them in one go
-  (selecting everything is how you clear history), and page back through older rounds. Guests' rounds are queued locally and claimed on sign-in.
+  (selecting everything is how you clear history), and page back through older rounds. Guests'
+  rounds are queued locally and claimed on sign-in.
 - **Explore, offline.** Browse nearby places on a map with local cuisine filters, switch between
   light and dark themes, and install it to your home screen.
 
@@ -75,6 +95,7 @@ Flask API (Google Cloud Run)
   ├─ OSRM (routing)               real driving distance/time; 2 mirrors raced, 30 min cache
   ├─ Nominatim (geocoding)        resolves a mentioned place ("near Mid Valley") to a search centre
   ├─ hard guards                  budget / exclusions / diet, applied before any model
+  ├─ meal + must-have rules       meal from text or the local hour; "must have X" as a filter + boost
   ├─ EngineManager                Laya · GLiNER2.5-Decide · CLM-8B (remote), lazy-loaded, RAM-budgeted
   └─ ranking + question           full ranking, ties by distance/price; optional question when close
 
@@ -116,6 +137,9 @@ optional question behave identically whichever one is selected. Everything below
 food-wheeler/
 ├── app.py                  Flask routes, hard guards, ranking/tie/mediator logic, location mentions, CORS, rate limiting
 ├── candidates.py           Overture bundle + Overpass fallback, OSRM routing, radius control, Explore listing
+├── meals.py                what kind of place each is (meal / dessert / drinks / bakery), which meal the couple
+│                           is after, and keeping the shortlist to places that suit it
+├── musts.py                "must have chicken" detection, what a place can serve, filter + boost
 ├── data/places_my_sg.parquet   bundled Overture snapshot (Malaysia/Singapore restaurants)
 ├── engines/                DecisionEngine interface, Laya/GLiNER/CLM wrappers, EngineManager
 ├── tests/                  pytest suite — engines are faked, Overpass/Overture/geocoding are mocked, no network needed
@@ -126,8 +150,9 @@ food-wheeler/
 └── web/                    the Next.js PWA
     ├── app/                landing page, (app) group: decide / explore / history / settings, login
     ├── components/dock.tsx      the floating macOS-style navigation dock, used at every screen size
-    ├── components/decide/  partner cards, deciding animation, canvas wheel, mediator, reveal
-    ├── lib/decide/         reducer state machine, API-mirroring types, shared cuisine list
+    ├── components/decide/  partner cards, meal chip, deciding animation, ranked list, canvas wheel, reveal
+    ├── lib/decide/         reducer state machine (incl. session resume), API-mirroring types, meal helpers,
+    │                       shared cuisine list
     ├── lib/location/       persisted location preference + permission handling
     ├── lib/db/             Drizzle schema and user-scoped queries
     ├── lib/sync/           IndexedDB outbox for guest → account history sync
@@ -199,12 +224,14 @@ Web app (`web/.env.local`, see `web/.env.example`):
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest tests/        # 195 tests: guards, ranking/question, dish & named-place shortlist, radius & location rules, same-country
-                                          # filtering, the Overture bundle, OSRM routing, location-mention
-                                          # extraction/geocoding, CORS, rate limit, engine manager
-cd web && npm test                       # 138 tests: decide reducer (incl. engine view & session restore), API client,
-                                          # weighted wheel, history queries/filters/labels/selection, sync outbox,
-                                          # distance formatting
+.venv/bin/python -m pytest tests/        # 332 tests: guards, ranking/question, dish & named-place shortlist, meal
+                                          # awareness, must-haves, radius & location rules, same-country filtering,
+                                          # the Overture bundle, OSRM routing, location-mention extraction/geocoding,
+                                          # dev-mode engine comparison, CORS, rate limit, engine manager
+cd web && npm test                       # 188 tests: decide reducer (incl. engine view, meal choice & session
+                                          # restore), meal helpers (shared fixture with the backend), nav links,
+                                          # API client, weighted wheel, history queries/filters/labels/selection,
+                                          # sync outbox, distance formatting
 cd web && npm run lint && npm run build
 .venv/bin/python scripts/compare_engines.py   # real engines, real latency/confidence on sample couples
 ```

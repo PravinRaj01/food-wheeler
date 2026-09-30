@@ -59,3 +59,45 @@ export function relaxedCaption(relaxed?: string[]): string | null {
   const foods = relaxed.join(" or ");
   return `Nothing nearby clearly serves ${foods} — these are the closest fits.`;
 }
+
+// ---------------------------------------------------------------------------
+// Meal from typed words - a mirror of the server's meals.meal_from_text, so
+// the "Looking for" chip can show what the server WILL decide once both
+// answers are in. Kept identical on purpose: both suites run the same cases
+// from tests/fixtures/meal_text_cases.json (see meal.test.ts), so they can't
+// drift apart silently. The server stays the source of truth - this only
+// previews it, and the request still sends `meal` only when the couple picked.
+// ---------------------------------------------------------------------------
+const MEAL_WORDS: [MealId, RegExp][] = [
+  ["breakfast", /\b(breakfast|brekkie|breakkie|brunch|sarapan)\b/g],
+  ["lunch", /\b(lunch|lunchy|tengah hari)\b/g],
+  ["dinner", /\b(dinner|dindin|din din)\b/g],
+  ["supper", /\b(supper|late night|late-night|midnight|after midnight)\b/g],
+  [
+    "snack",
+    /\b(snacks?|dessert|desserts|something sweet|sweet tooth|ice cream|cake|tea time|teatime|tea break|light bite)\b/g,
+  ],
+];
+const NEGATIONS = new Set(["no", "not", "without", "avoid", "except"]);
+
+function negated(text: string, start: number): boolean {
+  const before = text.slice(0, start).split(/\s+/).filter(Boolean);
+  return before.length > 0 && NEGATIONS.has(before[before.length - 1]);
+}
+
+/** The single meal the text asks for, or null if it names none - or several
+ * (two partners asking for different things, "lunch then dessert"), where
+ * picking one would override the other. */
+export function mealFromText(text: string): MealId | null {
+  const lower = (text || "").toLowerCase();
+  const found = new Set<MealId>();
+  for (const [meal, pattern] of MEAL_WORDS) {
+    for (const m of lower.matchAll(pattern)) {
+      if (!negated(lower, m.index ?? 0)) {
+        found.add(meal);
+        break;
+      }
+    }
+  }
+  return found.size === 1 ? [...found][0] : null;
+}

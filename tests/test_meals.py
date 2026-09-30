@@ -4,6 +4,7 @@ ones from the Overture bundle - Baskin-Robbins is an `ice_cream_shop`, "DD
 Famous Waffle" is filed as a generic `restaurant`, and Malaysian kopitiams are
 filed as `coffee_shop` - see meals.py for why each is classified the way it is.
 """
+import json
 import sys
 from pathlib import Path
 
@@ -13,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import candidates  # noqa: E402
 from meals import (  # noqa: E402
-    BAKERY, DESSERT, DRINKS, MEAL, breakfast_friendly, detect_meal, filter_for_meal, meal_from_hour,
-    meal_from_text, place_kind,
+    BAKERY, DESSERT, DRINKS, MEAL, breakfast_friendly, detect_meal, filter_for_meal, late_friendly,
+    meal_from_hour, meal_from_text, place_kind,
 )
 
 
@@ -78,34 +79,18 @@ def test_breakfast_friendly():
 
 # --- meal detection -----------------------------------------------------------
 
-@pytest.mark.parametrize("text,meal", [
-    ("lunch please", "lunch"),
-    ("something for lunchy", "lunch"),
-    ("dindin tonight", "dinner"),
-    ("dinner somewhere nice", "dinner"),
-    ("breakkie", "breakfast"),
-    ("brekkie and coffee", "breakfast"),
-    ("supper, late night mamak", "supper"),
-    ("something sweet", "snack"),
-    ("just ice cream", "snack"),
-    ("dessert", "snack"),
-])
-def test_meal_from_text(text, meal):
-    assert meal_from_text(text) == meal
+# The same cases web/lib/decide/meal.test.ts runs against meal.ts - the two
+# implementations mirror each other (the chip previews what the server will
+# decide), so both read this file and can't drift apart silently.
+_CASES = json.loads((Path(__file__).parent / "fixtures" / "meal_text_cases.json").read_text(encoding="utf-8"))
 
 
-def test_meal_from_text_ignores_negated_and_ambiguous_mentions():
-    assert meal_from_text("ramen, no ice cream") is None
-    assert meal_from_text("spicy food") is None
-    # Two different meals named (two partners, or "lunch then dessert"): leave alone.
-    assert meal_from_text("lunch  dessert") is None
-    assert meal_from_text("") is None
+@pytest.mark.parametrize("case", _CASES["text"], ids=lambda c: repr(c["text"]))
+def test_meal_from_text(case):
+    assert meal_from_text(case["text"]) == case["meal"]
 
 
-@pytest.mark.parametrize("hour,meal", [
-    (5, "breakfast"), (10, "breakfast"), (11, "lunch"), (15, "lunch"), (16, "snack"),
-    (17, "dinner"), (21, "dinner"), (22, "supper"), (0, "supper"), (4, "supper"),
-])
+@pytest.mark.parametrize("hour,meal", _CASES["hours"])
 def test_meal_from_hour_bands(hour, meal):
     assert meal_from_hour(hour) == meal
 
@@ -260,3 +245,51 @@ def test_get_candidates_passes_the_meal_through_the_overture_path(monkeypatch):
     assert {c["id"] for c in lunch} == {"briyani", "kopi"}
     anytime, _ = candidates.get_candidates(loc, radius_km=5)
     assert {c["id"] for c in anytime} == {"ice", "waffle", "briyani", "kopi"}
+
+
+# --- supper: late-trading places first ---------------------------------------------
+
+@pytest.mark.parametrize("name,expected", [
+    ("Mamak Corner", True),
+    ("Restoran Sin Kee 24 Jam", True),
+    ("Kedai Makan 24 Hours", True),
+    ("Nasi Kandar Pelita", True),
+    ("Restoran TKR 24H", True),
+    ("Restoran Sin Kee", False),
+    ("Sushi Tei", False),
+    ("Room 240 Cafe", False),          # "240" is not "24 hours"
+])
+def test_late_friendly(name, expected):
+    assert late_friendly(place(name, "Restaurant")) is expected
+
+
+def test_a_late_name_on_a_dessert_shop_is_still_not_a_supper_place():
+    assert late_friendly(place("Mamak Ice Cream", "Ice Cream Shop")) is False
+
+
+def test_at_supper_late_places_get_first_claim_but_nothing_is_dropped(monkeypatch):
+    monkeypatch.setattr(candidates, "_route_table", lambda lat, lng, places: {})
+    plain = [place(f"Restoran {i}", "Malaysian", 0.1 * i, pid=f"p{i}") for i in range(1, 11)]
+    late = [place("Mamak Bistro 24 Jam", "Malaysian", 4.0, pid="late1"),
+            place("Nasi Kandar Ali", "Malaysian", 4.5, pid="late2")]
+    params = candidates._radius_params(10)
+
+    supper = candidates._finalize_candidates(1.0, 1.0, plain + late, 10, params, meal="supper")
+    assert [c["id"] for c in supper[:2]] == ["late1", "late2"]
+    assert any(c["id"].startswith("p") for c in supper)   # plain places still fill the rest
+
+    dinner = candidates._finalize_candidates(1.0, 1.0, plain + late, 10, params, meal="dinner")
+    # The preference is supper-only: at dinner nothing is promoted, so the
+    # nearest place leads as usual (farther places may still appear via the
+    # distance-ring sampling, which has nothing to do with late trading).
+    assert dinner[0]["id"] == "p1"
+
+
+def test_a_demanded_food_still_outranks_the_late_night_preference(monkeypatch):
+    monkeypatch.setattr(candidates, "_route_table", lambda lat, lng, places: {})
+    results = [place("Mamak Bistro 24 Jam", "Malaysian", 0.5, pid="late"),
+               place("Ayam Penyet Ali", "Malaysian", 3.0, pid="ayam")]
+    results += [place(f"Restoran {i}", "Malaysian", float(i), pid=f"p{i}") for i in range(1, 6)]
+    params = candidates._radius_params(10)
+    final = candidates._finalize_candidates(1.0, 1.0, results, 10, params, meal="supper", musts=["chicken"])
+    assert final[0]["id"] == "ayam"

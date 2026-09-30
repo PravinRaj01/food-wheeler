@@ -114,6 +114,17 @@ def breakfast_friendly(c: dict) -> bool:
     return "breakfast" in label or label in _BREAKFAST_LABELS or bool(_BREAKFAST_NAME.search(_name(c)))
 
 
+_LATE_NAME = re.compile(r"\b(mamak|24\s?(?:jam|hours?|hrs?|h)|nasi kandar)\b")
+
+
+def late_friendly(c: dict) -> bool:
+    """A name that suggests it trades late: a mamak, "24 Jam" / "24 Hours",
+    nasi kandar. Only a hint - opening hours aren't in the place data, and a
+    name is weak evidence - so it's used to prefer places at supper, never to
+    rule any out."""
+    return place_kind(c) == MEAL and bool(_LATE_NAME.search(_name(c)))
+
+
 def is_snacky(c: dict) -> bool:
     """Somewhere to grab a snack, a sweet or a drink rather than a full meal."""
     return place_kind(c) != MEAL or _label(c) in ("cafe", "coffee shop")

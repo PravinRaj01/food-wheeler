@@ -6,6 +6,7 @@ import { ListOrdered, RotateCcw } from "lucide-react";
 import type { Choice, Location, RankedResponse } from "@/lib/decide/types";
 import { formatDistance } from "@/lib/decide/distance";
 import { DirectionsButton } from "@/components/decide/directions-button";
+import { HoursLink } from "@/components/decide/hours-link";
 import { REVEAL_KICKER } from "@/lib/copy";
 
 const RevealMap = dynamic(() => import("@/components/decide/reveal-map").then((m) => m.RevealMap), {
@@ -101,6 +102,7 @@ export function RevealPanel({
           <ListOrdered className="h-4 w-4" /> Back to the list
         </button>
       </div>
+      <HoursLink place={w} className="mt-3 text-center" />
       <button
         type="button"
         onClick={onStartOver}

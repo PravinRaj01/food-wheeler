@@ -38,3 +38,17 @@ export function navLinks(lat: number, lng: number, name: string, platform: NavPl
   });
   return options;
 }
+
+/** A Google Maps SEARCH for the place - not a route to its coordinates. The
+ * directions links above drop a bare pin, which carries no opening hours; a
+ * search lands on the place's own card, which does. Our place data has no
+ * hours at all, so this is how a couple can check one is open.
+ *
+ * The name plus address narrows a chain to the right branch (a name alone
+ * can land on a different outlet); when the address is only a placeholder the
+ * coordinates stand in for it. */
+export function placeSearchLink(place: { name: string; address?: string; lat: number; lng: number }): string {
+  const address = place.address?.trim();
+  const where = address && address.toLowerCase() !== "nearby" ? address : `${place.lat},${place.lng}`;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${place.name} ${where}`)}`;
+}

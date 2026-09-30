@@ -1,0 +1,33 @@
+{
+  "_comment": "Shared by tests/test_meals.py (meals.py) and web/lib/decide/meal.test.ts (meal.ts): the two implementations mirror each other, so both run these exact cases and can't drift apart silently.",
+  "text": [
+    { "text": "lunch please", "meal": "lunch" },
+    { "text": "something for lunchy", "meal": "lunch" },
+    { "text": "makan tengah hari", "meal": "lunch" },
+    { "text": "dindin tonight", "meal": "dinner" },
+    { "text": "dinner somewhere nice", "meal": "dinner" },
+    { "text": "din din", "meal": "dinner" },
+    { "text": "breakkie", "meal": "breakfast" },
+    { "text": "brekkie and coffee", "meal": "breakfast" },
+    { "text": "brunch", "meal": "breakfast" },
+    { "text": "sarapan", "meal": "breakfast" },
+    { "text": "supper, late night mamak", "meal": "supper" },
+    { "text": "midnight snack run", "meal": null },
+    { "text": "something sweet", "meal": "snack" },
+    { "text": "just ice cream", "meal": "snack" },
+    { "text": "dessert", "meal": "snack" },
+    { "text": "a light bite", "meal": "snack" },
+    { "text": "LUNCH", "meal": "lunch" },
+    { "text": "ramen, no ice cream", "meal": null },
+    { "text": "not dessert", "meal": null },
+    { "text": "spicy food", "meal": null },
+    { "text": "lunch  dessert", "meal": null },
+    { "text": "lunch or dinner", "meal": null },
+    { "text": "unlunched", "meal": null },
+    { "text": "", "meal": null }
+  ],
+  "hours": [
+    [5, "breakfast"], [10, "breakfast"], [11, "lunch"], [15, "lunch"], [16, "snack"],
+    [17, "dinner"], [21, "dinner"], [22, "supper"], [0, "supper"], [4, "supper"]
+  ]
+}

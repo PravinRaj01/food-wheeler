@@ -37,16 +37,24 @@ const chip = (active: boolean) =>
  * ("something sweet") and that wins. Tapping opens the choices inline. */
 export function MealChip({
   value,
+  typedMeal,
   onChange,
 }: {
-  /** The couple's own pick, or null to go by the time of day. */
+  /** The couple's own pick, or null to go by what they said and the time. */
   value: MealId | null;
+  /** The meal their typed words ask for - what the server will use over the
+   * clock. The page only passes it once BOTH answers are sealed: until then
+   * the chip changing would give away part of the first partner's answer. */
+  typedMeal: MealId | null;
   onChange: (meal: MealId | null) => void;
 }) {
   const hour = useLocalHour();
   const [open, setOpen] = useState(false);
   const guess = hour === null ? null : mealFromHour(hour);
-  const shown = value ?? guess;
+  // What "Auto" resolves to: typed words beat the clock, exactly as the
+  // server decides it (see meals.detect_meal).
+  const auto = typedMeal ?? guess;
+  const shown = value ?? auto;
 
   return (
     <div>
@@ -59,7 +67,9 @@ export function MealChip({
         <span>Looking for:</span>
         <span className="rounded-full border border-line bg-glass px-2.5 py-1 font-medium text-cream">
           {shown ? MEAL_LABELS[shown] : "…"}
-          {value === null && shown && <span className="ml-1 font-normal text-cream/40">· auto</span>}
+          {value === null && shown && (
+            <span className="ml-1 font-normal text-cream/40">· {typedMeal ? "from what you said" : "auto"}</span>
+          )}
         </span>
         <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
       </button>
@@ -83,7 +93,7 @@ export function MealChip({
                 }}
                 className={chip(value === null)}
               >
-                Auto{guess ? ` (${MEAL_LABELS[guess]})` : ""}
+                Auto{auto ? ` (${MEAL_LABELS[auto]})` : ""}
               </button>
               {MEAL_CHOICES.map((m) => (
                 <button

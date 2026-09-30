@@ -1,18 +1,37 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MEAL_CHOICES, MEAL_LABELS, mealCaption, mealFromHour, mustsCaption, relaxedCaption } from "./meal";
+import {
+  MEAL_CHOICES,
+  MEAL_LABELS,
+  mealCaption,
+  mealFromHour,
+  mealFromText,
+  mustsCaption,
+  relaxedCaption,
+} from "./meal";
+
+// The same cases tests/test_meals.py runs against the server's meals.py - the
+// chip previews what the server will decide, so the two must agree.
+const cases = JSON.parse(
+  // Resolved from the working directory (web/, where `npm test` runs): under the happy-dom
+  // test environment import.meta.url is not a file URL.
+  readFileSync(resolve(process.cwd(), "..", "tests", "fixtures", "meal_text_cases.json"), "utf-8"),
+) as { text: { text: string; meal: string | null }[]; hours: [number, string][] };
 
 describe("mealFromHour", () => {
-  // Must match the server's meals.meal_from_hour - see tests/test_meals.py's
-  // test_meal_from_hour_bands, which uses this same table.
-  it.each([
-    [5, "breakfast"], [10, "breakfast"], [11, "lunch"], [15, "lunch"], [16, "snack"],
-    [17, "dinner"], [21, "dinner"], [22, "supper"], [0, "supper"], [4, "supper"],
-  ] as const)("hour %i is %s", (hour, meal) => {
+  it.each(cases.hours)("hour %i is %s", (hour, meal) => {
     expect(mealFromHour(hour)).toBe(meal);
   });
 
   it("covers every hour of the day with a real meal choice", () => {
     for (let h = 0; h < 24; h++) expect(MEAL_CHOICES).toContain(mealFromHour(h));
+  });
+});
+
+describe("mealFromText", () => {
+  it.each(cases.text.map((c) => [c.text, c.meal] as const))("%j -> %s", (text, meal) => {
+    expect(mealFromText(text)).toBe(meal);
   });
 });
 

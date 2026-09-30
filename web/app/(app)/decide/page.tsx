@@ -26,6 +26,7 @@ import { RadiusSlider } from "@/components/decide/radius-slider";
 import { NamesStep } from "@/components/decide/names-step";
 import { DecidingSequence } from "@/components/decide/deciding-sequence";
 import { MealChip } from "@/components/decide/meal-chip";
+import { mealFromText } from "@/lib/decide/meal";
 import type { PendingDecideResult } from "@/components/decide/deciding-sequence";
 import { LocationPrompt } from "@/components/decide/location-prompt";
 import { Wheel } from "@/components/decide/wheel";
@@ -489,7 +490,13 @@ export default function DecidePage() {
               </div>
             </div>
 
-            <MealChip value={state.mealChoice} onChange={(meal) => dispatch({ type: "SET_MEAL", meal })} />
+            {/* typedMeal only once BOTH answers are sealed: before that, the chip
+                reacting to words would leak part of the first partner's answer. */}
+            <MealChip
+              value={state.mealChoice}
+              typedMeal={canSubmit(state) ? mealFromText(`${state.p1Text} ${state.p2Text}`) : null}
+              onChange={(meal) => dispatch({ type: "SET_MEAL", meal })}
+            />
 
             {canSubmit(state) && (
               <>

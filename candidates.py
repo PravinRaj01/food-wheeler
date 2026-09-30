@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from meals import filter_for_meal
+from meals import filter_for_meal, late_friendly
 from musts import filter_for_musts, has_sign
 
 OVERPASS_ENDPOINTS = [
@@ -988,6 +988,12 @@ def _finalize_candidates(
     if musts:
         rest = filter_for_musts(rest, musts)
         priority_ids = {c["id"] for c in rest if has_sign(c, musts)} or None
+    if meal == "supper" and not priority_ids:
+        # Late at night, places that usually trade late (mamak, "24 Jam") get
+        # first claim on the slots. A soft preference from the NAME only - the
+        # data has no opening hours - so nothing else is dropped, and a
+        # demanded food (above) still takes priority over it.
+        priority_ids = {c["id"] for c in rest if late_friendly(c)} or None
     stratify = params["stratify"] and not (prefer_cuisine or dishes or priority_ids)
     pool_room = max(ROUTE_POOL_SIZE - len(pinned), 1)
     pool = pinned + _select_diverse(
