@@ -833,3 +833,59 @@ def test_rank_tiebreak_key_then_prefers_the_cheaper_place():
     cheap = {"id": "b", "price": "$", "distance_km": 1.0}
     ordered = sorted([pricey, cheap], key=app_module.rank_tiebreak_key)
     assert [c["id"] for c in ordered] == ["b", "a"]
+
+
+# --- Meal awareness (see meals.py) ---------------------------------------------
+
+def _scored(fake_manager):
+    # FakeEngine defaults to no probabilities, which is a MODEL_ERROR round.
+    _, engine_a, _ = fake_manager
+    engine_a._probabilities = {"a": 0.6, "b": 0.3, "c": 0.1}
+
+
+def _meal_kwarg(client, **body):
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        resp = _post(client, partner1={"text": "spicy"}, partner2={"text": "anything"}, **body)
+    return mock_get.call_args.kwargs.get("meal"), resp.get_json()
+
+
+def test_decide_guesses_the_meal_from_the_local_hour(client, fake_manager):
+    _scored(fake_manager)
+    meal, data = _meal_kwarg(client, local_hour=13)
+    assert meal == "lunch"
+    assert data["meal"] == {"id": "lunch", "source": "clock"}
+
+
+def test_typed_words_beat_the_clock_and_a_chosen_meal_beats_both(client, fake_manager):
+    _scored(fake_manager)
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        resp = _post(client, partner1={"text": "something sweet"}, partner2={"text": "anything"}, local_hour=13)
+    assert mock_get.call_args.kwargs["meal"] == "snack"
+    assert resp.get_json()["meal"] == {"id": "snack", "source": "text"}
+
+    with patch("app.get_candidates", return_value=(FIXED_CANDS, "osm")) as mock_get:
+        resp = _post(client, partner1={"text": "something sweet"}, partner2={"text": "anything"},
+                     local_hour=13, meal="dinner")
+    assert mock_get.call_args.kwargs["meal"] == "dinner"
+    assert resp.get_json()["meal"] == {"id": "dinner", "source": "chosen"}
+
+
+def test_without_a_clock_or_words_there_is_no_meal_rule(client, fake_manager):
+    _scored(fake_manager)
+    meal, data = _meal_kwarg(client)
+    assert meal == "any"
+    assert data["meal"] == {"id": "any", "source": "none"}
+
+
+def test_malformed_meal_hints_are_ignored_not_rejected(client, fake_manager):
+    _scored(fake_manager)
+    for bad in ({"local_hour": 99}, {"local_hour": "noon"}, {"local_hour": True}, {"meal": "brunch-ish"}, {"meal": 7}):
+        meal, data = _meal_kwarg(client, **bad)
+        assert data["status"] == "ranked", bad
+        assert meal == "any", bad
+
+
+def test_the_meal_is_echoed_even_for_a_single_surviving_place(client, fake_manager):
+    with patch("app.get_candidates", return_value=(FIXED_CANDS[:1], "osm")):
+        data = _post(client, partner1={"text": "x"}, partner2={"text": "y"}, local_hour=19).get_json()
+    assert data["meal"] == {"id": "dinner", "source": "clock"}

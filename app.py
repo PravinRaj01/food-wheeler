@@ -32,6 +32,7 @@ if hasattr(sys.stdout, "reconfigure"):
 import requests
 from flask import Flask, jsonify, request
 
+from meals import MEALS, detect_meal
 from candidates import (
     CUISINE_NEEDLES, DEFAULT_RADIUS_KM, PRICE_TIER_MAX, LocationRequired, PlacesUnavailable,
     clamp_radius_km, detect_country, detect_cuisine_preference, effective_km, get_candidates, haversine_km,
@@ -563,8 +564,16 @@ def _validate(body: dict):
     dev_mode = bool(body.get("dev_mode")) and DEV_MODE_ALLOWED
     radius_km = clamp_radius_km(body.get("radius_km", DEFAULT_RADIUS_KM))
     cross_border = bool(body.get("cross_border"))
+    # Both optional and forgiving - anything malformed is treated as absent
+    # rather than failing the round over a hint.
+    local_hour = body.get("local_hour")
+    if isinstance(local_hour, bool) or not isinstance(local_hour, int) or not 0 <= local_hour <= 23:
+        local_hour = None
+    meal_choice = body.get("meal")
+    if meal_choice not in MEALS:
+        meal_choice = None
     return (p1, p2, tiebreakers, round_num, location, candidates_in, source_in, engine_id, dev_mode,
-            radius_km, cross_border, search_center_in)
+            radius_km, cross_border, search_center_in, local_hour, meal_choice)
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +785,8 @@ def decide():
     body = request.get_json(silent=True) or {}
     try:
         (p1, p2, tiebreakers, round_num, location, candidates_in,
-         source_in, engine_id, dev_mode, radius_km, cross_border, search_center_in) = _validate(body)
+         source_in, engine_id, dev_mode, radius_km, cross_border, search_center_in,
+         local_hour, meal_choice) = _validate(body)
     except ValidationError as e:
         return jsonify({"status": "error", "code": e.code, "message": e.message}), 400
     same_country = not cross_border
@@ -801,6 +811,11 @@ def decide():
     # already-trusted candidates_in round doesn't get re-biased; it's kept
     # exactly as fetched.
     combined_text = " ".join([p1, p2] + [tb.get("text", "") for tb in tiebreakers])
+    # Which meal they're after: a chip the couple set, else what they typed
+    # ("lunch", "something sweet"), else the local clock - see meals.py. Sent
+    # back so the UI can say what was assumed.
+    meal, meal_source = detect_meal(combined_text, local_hour, meal_choice)
+    meal_info = {"id": meal, "source": meal_source}
     country = _country_for_response(location, same_country)
 
     # A trusted candidates_in round already searched around whatever
@@ -855,7 +870,7 @@ def decide():
             route_from = location if search_center else None
             cands, source = get_candidates(fetch_location, radius_km=radius_km, same_country=same_country,
                                             prefer_cuisine=prefer_cuisine, route_from=route_from,
-                                            mention_text=combined_text)
+                                            mention_text=combined_text, meal=meal)
         except PlacesUnavailable as exc:
             return _places_unavailable_response(exc, radius_km)
         except LocationRequired:
@@ -876,6 +891,7 @@ def decide():
                                     engine_meta, t0)
         payload["country"] = country
         payload["search_center"] = search_center
+        payload["meal"] = meal_info
         if dev_mode:
             # Normally this path skips scoring entirely - the outcome is
             # forced regardless of what any engine says. Dev Mode is the one
@@ -924,6 +940,7 @@ def decide():
         return jsonify({"status": "error", "code": "MODEL_ERROR", "message": str(exc)}), 500
     payload["country"] = country
     payload["search_center"] = search_center
+    payload["meal"] = meal_info
 
     if dev_mode:
         # The reference "winner" for the engine comparison is simply the

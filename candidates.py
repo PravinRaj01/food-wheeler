@@ -20,6 +20,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+from meals import filter_for_meal
+
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -826,6 +828,7 @@ def get_candidates(
     prefer_cuisine: str | None = None,
     route_from: dict | None = None,
     mention_text: str | None = None,
+    meal: str | None = None,
 ) -> tuple[list[dict], str]:
     """Returns (candidates, source) where source is 'overture', 'osm' or
     'mock'. The AI decision engines see only this curated, capped list -
@@ -855,6 +858,9 @@ def get_candidates(
     into the shortlist, and a stated dish ranks places whose name carries it
     first. See _finalize_candidates.
 
+    meal (see meals.detect_meal) keeps the shortlist to places that suit it -
+    at lunch, no ice-cream or waffle shops - except places the couple named.
+
     Raises LocationRequired with no location at all, and PlacesUnavailable
     if a real location was given but nothing usable came back - see each
     class's docstring."""
@@ -872,7 +878,7 @@ def get_candidates(
         if not results:
             raise PlacesUnavailable("empty")
         final = _finalize_candidates(lat, lng, results, radius_km, params, prefer_cuisine=prefer_cuisine,
-                                      route_from=route_from, mention_text=mention_text)
+                                      route_from=route_from, mention_text=mention_text, meal=meal)
         if not final:
             raise PlacesUnavailable("empty")
         return final, "overture"
@@ -912,7 +918,7 @@ def get_candidates(
     # the mock set (which is what put NYC restaurants 15,000km away in
     # front of a real user).
     final = _finalize_candidates(lat, lng, best_results, best_radius_km, params, prefer_cuisine=prefer_cuisine,
-                                  route_from=route_from, mention_text=mention_text)
+                                  route_from=route_from, mention_text=mention_text, meal=meal)
     if not final:
         raise PlacesUnavailable("empty")
     return final, "osm"
@@ -921,7 +927,7 @@ def get_candidates(
 def _finalize_candidates(
     lat: float, lng: float, results: list[dict], radius_km: float, params: dict,
     prefer_cuisine: str | None = None, route_from: dict | None = None,
-    mention_text: str | None = None,
+    mention_text: str | None = None, meal: str | None = None,
 ) -> list[dict]:
     """distance_km is only ever the cheap prefilter - a road route is never
     shorter than the straight line, so it's a safe upper bound, but it can
@@ -956,11 +962,18 @@ def _finalize_candidates(
       sampling exists to surface far places when nothing is asked for, but at
       50km it turned "biryani" into a random handful of unrelated places
       out of thousands - with a preference, the best MATCHES should win, not
-      a spread."""
+      a spread.
+
+    meal (see meals.filter_for_meal) narrows what's left to places that suit
+    it BEFORE the pool is picked, so the 8 slots aren't spent on an ice-cream
+    shop at lunch. Named places are taken out first and so are exempt: if a
+    partner asked for Baskin-Robbins by name they get it, whatever the hour."""
     dishes = detect_dish_keywords(mention_text) if mention_text else []
     pinned = find_named_places(mention_text, results)[: params["max_candidates"]] if mention_text else []
     pinned_ids = {c["id"] for c in pinned}
     rest = [c for c in results if c["id"] not in pinned_ids]
+    if meal:
+        rest, _ = filter_for_meal(rest, meal)
     stratify = params["stratify"] and not (prefer_cuisine or dishes)
     pool_room = max(ROUTE_POOL_SIZE - len(pinned), 1)
     pool = pinned + _select_diverse(
